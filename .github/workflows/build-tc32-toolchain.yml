@@ -33,31 +33,26 @@ jobs:
         include:
           - host: linux-amd64
             runs_on: ubuntu-latest
-            shell: bash
             archive_ext: tar.gz
             is_windows: false
             build_32_bits: false
           - host: linux-i386
             runs_on: ubuntu-latest
-            shell: bash
             archive_ext: tar.gz
             is_windows: false
             build_32_bits: true
           - host: macos-amd64
             runs_on: macos-15-intel
-            shell: bash
             archive_ext: tar.gz
             is_windows: false
             build_32_bits: false
           - host: macos-arm64
             runs_on: macos-14
-            shell: bash
             archive_ext: tar.gz
             is_windows: false
             build_32_bits: false
           - host: windows-amd64
             runs_on: windows-latest
-            shell: pwsh
             archive_ext: zip
             is_windows: true
             build_32_bits: false
@@ -90,8 +85,16 @@ jobs:
             brew install ninja
           fi
 
-      - name: Show tool versions
-        shell: ${{ matrix.shell }}
+      - name: Show tool versions (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          cmake --version
+          ninja --version
+
+      - name: Show tool versions (Windows)
+        if: matrix.is_windows
+        shell: pwsh
         run: |
           cmake --version
           ninja --version
