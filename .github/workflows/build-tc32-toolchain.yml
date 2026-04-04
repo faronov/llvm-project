@@ -21,7 +21,7 @@ env:
   BUILD_TYPE: Release
   LLVM_ENABLE_PROJECTS: clang;lld
   LLVM_TARGETS_TO_BUILD: ARM
-  LLVM_DISTRIBUTION_COMPONENTS: clang;clang-resource-headers;lld;llc;opt;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readelf;llvm-readobj;llvm-size;llvm-strip
+  LLVM_TOOLCHAIN_TOOLS: llc;opt;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readobj;llvm-size;llvm-strip
 
 jobs:
   build-toolchain:
@@ -107,9 +107,9 @@ jobs:
           BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
           INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
           mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
-          EXTRA_ARGS=()
+          EXTRA_ARGS=""
           if [ "${{ matrix.build_32_bits }}" = "true" ]; then
-            EXTRA_ARGS+=("-DLLVM_BUILD_32_BITS=ON")
+            EXTRA_ARGS="-DLLVM_BUILD_32_BITS=ON"
           fi
           cmake -S llvm -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
@@ -117,6 +117,7 @@ jobs:
             -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
             -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
             -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+            -DLLVM_TOOLCHAIN_TOOLS="$LLVM_TOOLCHAIN_TOOLS" \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -125,8 +126,7 @@ jobs:
             -DLLVM_BUILD_EXAMPLES=OFF \
             -DLLVM_BUILD_DOCS=OFF \
             -DCLANG_INCLUDE_TESTS=OFF \
-            -DLLVM_DISTRIBUTION_COMPONENTS="$LLVM_DISTRIBUTION_COMPONENTS" \
-            "${EXTRA_ARGS[@]}"
+            $EXTRA_ARGS
 
       - name: Configure LLVM (Windows)
         if: matrix.is_windows
@@ -136,20 +136,20 @@ jobs:
           $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
           New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
           cmake -S llvm -B $buildDir -G Ninja `
-            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
-            -DCMAKE_INSTALL_PREFIX=$installDir `
-            -DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS `
-            -DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD `
-            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON `
-            -DLLVM_INCLUDE_TESTS=OFF `
-            -DLLVM_INCLUDE_BENCHMARKS=OFF `
-            -DLLVM_INCLUDE_EXAMPLES=OFF `
-            -DLLVM_BUILD_TESTS=OFF `
-            -DLLVM_BUILD_BENCHMARKS=OFF `
-            -DLLVM_BUILD_EXAMPLES=OFF `
-            -DLLVM_BUILD_DOCS=OFF `
-            -DCLANG_INCLUDE_TESTS=OFF `
-            -DLLVM_DISTRIBUTION_COMPONENTS=$env:LLVM_DISTRIBUTION_COMPONENTS
+            "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
+            "-DCMAKE_INSTALL_PREFIX=$installDir" `
+            "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
+            "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
+            "-DLLVM_INSTALL_TOOLCHAIN_ONLY=ON" `
+            "-DLLVM_TOOLCHAIN_TOOLS=$env:LLVM_TOOLCHAIN_TOOLS" `
+            "-DLLVM_INCLUDE_TESTS=OFF" `
+            "-DLLVM_INCLUDE_BENCHMARKS=OFF" `
+            "-DLLVM_INCLUDE_EXAMPLES=OFF" `
+            "-DLLVM_BUILD_TESTS=OFF" `
+            "-DLLVM_BUILD_BENCHMARKS=OFF" `
+            "-DLLVM_BUILD_EXAMPLES=OFF" `
+            "-DLLVM_BUILD_DOCS=OFF" `
+            "-DCLANG_INCLUDE_TESTS=OFF"
 
       - name: Build and install distribution (Unix)
         if: ${{ !matrix.is_windows }}
@@ -157,14 +157,14 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
-          cmake --build "$BUILD_DIR" --target install-distribution --parallel
+          cmake --build "$BUILD_DIR" --target install --parallel
 
       - name: Build and install distribution (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
-          cmake --build $buildDir --target install-distribution --parallel
+          cmake --build $buildDir --target install --parallel
 
       - name: Strip binaries and remove extras (Unix)
         if: ${{ !matrix.is_windows }}
@@ -243,7 +243,7 @@ jobs:
           "$PREFIX/bin/ld.lld" --gc-sections -e _start -T "$TEST_DIR/link.ld" \
             -z max-page-size=0x8000 -z common-page-size=0x8000 \
             -o "$TEST_DIR/start.elf" "$TEST_DIR/start-llc.o"
-          "$PREFIX/bin/llvm-readelf" -h "$TEST_DIR/start.elf" | tee "$TEST_DIR/readelf.txt"
+          "$PREFIX/bin/llvm-readobj" --file-headers "$TEST_DIR/start.elf" | tee "$TEST_DIR/readelf.txt"
           grep -Eq 'Machine:.*(8800|TC32)' "$TEST_DIR/readelf.txt"
 
       - name: TC32 smoke test (Windows)
@@ -283,7 +283,7 @@ jobs:
           & (Join-Path $prefix "bin/ld.lld.exe") --gc-sections -e _start -T (Join-Path $testDir "link.ld") `
             -z max-page-size=0x8000 -z common-page-size=0x8000 `
             -o (Join-Path $testDir "start.elf") (Join-Path $testDir "start-llc.o")
-          $header = & (Join-Path $prefix "bin/llvm-readelf.exe") -h (Join-Path $testDir "start.elf")
+          $header = & (Join-Path $prefix "bin/llvm-readobj.exe") --file-headers (Join-Path $testDir "start.elf")
           $header | Set-Content -Path (Join-Path $testDir "readelf.txt")
           if ($header -notmatch 'Machine:.*(8800|TC32)') {
             throw "TC32 machine id was not found in llvm-readelf output."
