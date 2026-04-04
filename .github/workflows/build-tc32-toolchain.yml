@@ -1,0 +1,340 @@
+name: Build TC32 LLVM Toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "llvm/**"
+      - "clang/**"
+      - "lld/**"
+      - ".github/workflows/build-tc32-toolchain.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tc32-llvm-toolchain
+  cancel-in-progress: false
+
+env:
+  BUILD_TYPE: Release
+  LLVM_ENABLE_PROJECTS: clang;lld
+  LLVM_TARGETS_TO_BUILD: ARM
+  LLVM_DISTRIBUTION_COMPONENTS: clang;clang-resource-headers;lld;llc;opt;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readelf;llvm-readobj;llvm-size;llvm-strip
+
+jobs:
+  build-toolchain:
+    name: ${{ matrix.host }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: linux-amd64
+            runs_on: ubuntu-latest
+            shell: bash
+            archive_ext: tar.gz
+            is_windows: false
+            build_32_bits: false
+          - host: linux-i386
+            runs_on: ubuntu-latest
+            shell: bash
+            archive_ext: tar.gz
+            is_windows: false
+            build_32_bits: true
+          - host: macos-amd64
+            runs_on: macos-15-intel
+            shell: bash
+            archive_ext: tar.gz
+            is_windows: false
+            build_32_bits: false
+          - host: macos-arm64
+            runs_on: macos-14
+            shell: bash
+            archive_ext: tar.gz
+            is_windows: false
+            build_32_bits: false
+          - host: windows-amd64
+            runs_on: windows-latest
+            shell: pwsh
+            archive_ext: zip
+            is_windows: true
+            build_32_bits: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Enable MSVC environment
+        if: matrix.is_windows
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake python3
+          if [ "${{ matrix.build_32_bits }}" = "true" ]; then
+            sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386
+          fi
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+
+      - name: Show tool versions
+        shell: ${{ matrix.shell }}
+        run: |
+          cmake --version
+          ninja --version
+
+      - name: Configure LLVM (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
+          EXTRA_ARGS=()
+          if [ "${{ matrix.build_32_bits }}" = "true" ]; then
+            EXTRA_ARGS+=("-DLLVM_BUILD_32_BITS=ON")
+          fi
+          cmake -S llvm -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+            -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
+            -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_BENCHMARKS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_BUILD_DOCS=OFF \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            -DLLVM_DISTRIBUTION_COMPONENTS="$LLVM_DISTRIBUTION_COMPONENTS" \
+            "${EXTRA_ARGS[@]}"
+
+      - name: Configure LLVM (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
+          cmake -S llvm -B $buildDir -G Ninja `
+            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
+            -DCMAKE_INSTALL_PREFIX=$installDir `
+            -DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS `
+            -DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD `
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_BUILD_TESTS=OFF `
+            -DLLVM_BUILD_BENCHMARKS=OFF `
+            -DLLVM_BUILD_EXAMPLES=OFF `
+            -DLLVM_BUILD_DOCS=OFF `
+            -DCLANG_INCLUDE_TESTS=OFF `
+            -DLLVM_DISTRIBUTION_COMPONENTS=$env:LLVM_DISTRIBUTION_COMPONENTS
+
+      - name: Build and install distribution (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
+          cmake --build "$BUILD_DIR" --target install-distribution --parallel
+
+      - name: Build and install distribution (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
+          cmake --build $buildDir --target install-distribution --parallel
+
+      - name: Strip binaries and remove extras (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          STRIP_TOOL="$INSTALL_DIR/bin/llvm-strip"
+          find "$INSTALL_DIR" -type f \( -name '*.a' -o -name '*.la' -o -name '*.pdb' \) -delete 2>/dev/null || true
+          for d in "$INSTALL_DIR/share/man" "$INSTALL_DIR/share/info" "$INSTALL_DIR/share/doc" "$INSTALL_DIR/share/locale"; do
+            rm -rf "$d"
+          done
+          if [ -x "$STRIP_TOOL" ]; then
+            while IFS= read -r -d '' f; do
+              "$STRIP_TOOL" "$f" 2>/dev/null || true
+            done < <(find "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" -type f \
+              \( -perm -111 -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) -print0 2>/dev/null)
+          fi
+
+      - name: Strip binaries and remove extras (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $stripTool = Join-Path $installDir "bin/llvm-strip.exe"
+          Get-ChildItem -Path $installDir -Recurse -Include *.pdb -File -ErrorAction SilentlyContinue | Remove-Item -Force
+          foreach ($dir in @("share/man", "share/info", "share/doc", "share/locale")) {
+            $full = Join-Path $installDir $dir
+            if (Test-Path $full) {
+              Remove-Item -Recurse -Force $full
+            }
+          }
+          if (Test-Path $stripTool) {
+            Get-ChildItem -Path (Join-Path $installDir "bin"), (Join-Path $installDir "lib") -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in @(".exe", ".dll") } |
+              ForEach-Object {
+                & $stripTool $_.FullName 2>$null
+              }
+          }
+
+      - name: TC32 smoke test (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          TEST_DIR="$GITHUB_WORKSPACE/smoke/${{ matrix.host }}"
+          mkdir -p "$TEST_DIR"
+          "$PREFIX/bin/clang" --version
+          "$PREFIX/bin/llc" --version
+          "$PREFIX/bin/ld.lld" --version
+          "$PREFIX/bin/llvm-objdump" --version
+          cat > "$TEST_DIR/start.c" <<'EOF'
+          __attribute__((noreturn)) void _start(void) {
+            volatile unsigned x = 0;
+            for (;;) {
+              x++;
+            }
+          }
+          EOF
+          cat > "$TEST_DIR/link.ld" <<'EOF'
+          ENTRY(_start)
+          SECTIONS {
+            . = 0;
+            .text : { *(.text*) }
+            .rodata : { *(.rodata*) }
+            .data : { *(.data*) }
+            .bss : { *(.bss*) *(COMMON) }
+            /DISCARD/ : { *(.comment) *(.note*) *(.ARM.attributes) }
+          }
+          EOF
+          "$PREFIX/bin/clang" --target=tc32 -c -ffreestanding -nostdlib -o "$TEST_DIR/start-clang.o" "$TEST_DIR/start.c"
+          "$PREFIX/bin/clang" --target=tc32 -emit-llvm -c -ffreestanding -nostdlib -o "$TEST_DIR/start.bc" "$TEST_DIR/start.c"
+          "$PREFIX/bin/opt" -O2 -o "$TEST_DIR/start.opt.bc" "$TEST_DIR/start.bc"
+          "$PREFIX/bin/llc" -mtriple=tc32 -O2 -function-sections -data-sections -filetype=obj -o "$TEST_DIR/start-llc.o" "$TEST_DIR/start.opt.bc"
+          "$PREFIX/bin/ld.lld" --gc-sections -e _start -T "$TEST_DIR/link.ld" \
+            -z max-page-size=0x8000 -z common-page-size=0x8000 \
+            -o "$TEST_DIR/start.elf" "$TEST_DIR/start-llc.o"
+          "$PREFIX/bin/llvm-readelf" -h "$TEST_DIR/start.elf" | tee "$TEST_DIR/readelf.txt"
+          grep -Eq 'Machine:.*(8800|TC32)' "$TEST_DIR/readelf.txt"
+
+      - name: TC32 smoke test (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $testDir = Join-Path $env:GITHUB_WORKSPACE "smoke/${{ matrix.host }}"
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+          & (Join-Path $prefix "bin/clang.exe") --version
+          & (Join-Path $prefix "bin/llc.exe") --version
+          & (Join-Path $prefix "bin/ld.lld.exe") --version
+          & (Join-Path $prefix "bin/llvm-objdump.exe") --version
+          @'
+          __attribute__((noreturn)) void _start(void) {
+            volatile unsigned x = 0;
+            for (;;) {
+              x++;
+            }
+          }
+          '@ | Set-Content -Path (Join-Path $testDir "start.c") -NoNewline
+          @'
+          ENTRY(_start)
+          SECTIONS {
+            . = 0;
+            .text : { *(.text*) }
+            .rodata : { *(.rodata*) }
+            .data : { *(.data*) }
+            .bss : { *(.bss*) *(COMMON) }
+            /DISCARD/ : { *(.comment) *(.note*) *(.ARM.attributes) }
+          }
+          '@ | Set-Content -Path (Join-Path $testDir "link.ld") -NoNewline
+          & (Join-Path $prefix "bin/clang.exe") --target=tc32 -c -ffreestanding -nostdlib -o (Join-Path $testDir "start-clang.o") (Join-Path $testDir "start.c")
+          & (Join-Path $prefix "bin/clang.exe") --target=tc32 -emit-llvm -c -ffreestanding -nostdlib -o (Join-Path $testDir "start.bc") (Join-Path $testDir "start.c")
+          & (Join-Path $prefix "bin/opt.exe") -O2 -o (Join-Path $testDir "start.opt.bc") (Join-Path $testDir "start.bc")
+          & (Join-Path $prefix "bin/llc.exe") -mtriple=tc32 -O2 -function-sections -data-sections -filetype=obj -o (Join-Path $testDir "start-llc.o") (Join-Path $testDir "start.opt.bc")
+          & (Join-Path $prefix "bin/ld.lld.exe") --gc-sections -e _start -T (Join-Path $testDir "link.ld") `
+            -z max-page-size=0x8000 -z common-page-size=0x8000 `
+            -o (Join-Path $testDir "start.elf") (Join-Path $testDir "start-llc.o")
+          $header = & (Join-Path $prefix "bin/llvm-readelf.exe") -h (Join-Path $testDir "start.elf")
+          $header | Set-Content -Path (Join-Path $testDir "readelf.txt")
+          if ($header -notmatch 'Machine:.*(8800|TC32)') {
+            throw "TC32 machine id was not found in llvm-readelf output."
+          }
+
+      - name: Create size report and archive (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          ARCHIVE="$GITHUB_WORKSPACE/tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}"
+          REPORT="$GITHUB_WORKSPACE/size-report-${{ matrix.host }}.txt"
+          {
+            echo "Host: ${{ matrix.host }}"
+            echo
+            du -sh "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" "$INSTALL_DIR/share" 2>/dev/null
+            echo
+            echo "Top 30 largest files:"
+            find "$INSTALL_DIR" -type f -exec du -h {} + | sort -hr | sed -n '1,30p'
+          } > "$REPORT"
+          tar -C "$INSTALL_DIR" -czf "$ARCHIVE" .
+
+      - name: Create size report and archive (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $archive = Join-Path $env:GITHUB_WORKSPACE "tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}"
+          $report = Join-Path $env:GITHUB_WORKSPACE "size-report-${{ matrix.host }}.txt"
+          $files = Get-ChildItem -Path $installDir -Recurse -File | Sort-Object Length -Descending
+          @(
+            "Host: ${{ matrix.host }}"
+            ""
+            "Total bytes: $((Get-ChildItem -Path $installDir -Recurse -File | Measure-Object Length -Sum).Sum)"
+            ""
+            "Top 30 largest files:"
+            $files | Select-Object -First 30 | ForEach-Object { "{0}`t{1}" -f $_.Length, $_.FullName }
+          ) | Set-Content -Path $report
+          if (Test-Path $archive) {
+            Remove-Item -Force $archive
+          }
+          Compress-Archive -Path (Join-Path $installDir '*') -DestinationPath $archive
+
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc32-llvm-toolchain-${{ matrix.host }}
+          path: tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ matrix.host }}
+          path: size-report-${{ matrix.host }}.txt
+          if-no-files-found: error
