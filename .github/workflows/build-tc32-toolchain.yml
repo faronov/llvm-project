@@ -122,6 +122,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
             -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
             -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
             -DLLVM_TOOLCHAIN_TOOLS="$LLVM_TOOLCHAIN_TOOLS" \
             -DLLVM_INCLUDE_TESTS=ON \
@@ -146,6 +150,11 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL" `
+            "-DLLVM_ENABLE_ZSTD=OFF" `
+            "-DLLVM_ENABLE_LIBXML2=OFF" `
+            "-DLLVM_ENABLE_LIBEDIT=OFF" `
+            "-DLLVM_ENABLE_TERMINFO=OFF" `
             "-DLLVM_INSTALL_TOOLCHAIN_ONLY=ON" `
             "-DLLVM_TOOLCHAIN_TOOLS=$env:LLVM_TOOLCHAIN_TOOLS" `
             "-DLLVM_INCLUDE_TESTS=ON" `
@@ -224,6 +233,7 @@ jobs:
           set -euo pipefail
           PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-${{ matrix.host }}.txt"
+          "$PREFIX/bin/llvm-config" --system-libs > "$GITHUB_WORKSPACE/llvm-system-libs-${{ matrix.host }}.txt"
           "$PREFIX/bin/llvm-config" --version >/dev/null
           test -x "$PREFIX/bin/clang"
           test -x "$PREFIX/bin/llc"
@@ -237,6 +247,8 @@ jobs:
           $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           & (Join-Path $prefix "bin/llvm-config.exe") --components |
             Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-${{ matrix.host }}.txt")
+          & (Join-Path $prefix "bin/llvm-config.exe") --system-libs |
+            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-system-libs-${{ matrix.host }}.txt")
           & (Join-Path $prefix "bin/llvm-config.exe") --version | Out-Null
           foreach ($tool in @("clang.exe", "llc.exe", "ld.lld.exe", "llvm-objdump.exe")) {
             if (-not (Test-Path (Join-Path $prefix "bin/$tool"))) {
@@ -346,6 +358,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
             -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
             -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_TOOLCHAIN_TOOLS="$LLVM_TOOLCHAIN_TOOLS" \
             -DLLVM_INCLUDE_TESTS=ON \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
@@ -369,6 +385,11 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL" `
+            "-DLLVM_ENABLE_ZSTD=OFF" `
+            "-DLLVM_ENABLE_LIBXML2=OFF" `
+            "-DLLVM_ENABLE_LIBEDIT=OFF" `
+            "-DLLVM_ENABLE_TERMINFO=OFF" `
             "-DLLVM_TOOLCHAIN_TOOLS=$env:LLVM_TOOLCHAIN_TOOLS" `
             "-DLLVM_INCLUDE_TESTS=ON" `
             "-DLLVM_INCLUDE_BENCHMARKS=OFF" `
@@ -571,7 +592,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: size-report-toolchain-${{ matrix.host }}
-          path: size-report-toolchain-${{ matrix.host }}.txt
+          path: |
+            size-report-toolchain-${{ matrix.host }}.txt
+            llvm-components-${{ matrix.host }}.txt
+            llvm-system-libs-${{ matrix.host }}.txt
           if-no-files-found: error
 
       - name: Upload Rust-compatible size report
