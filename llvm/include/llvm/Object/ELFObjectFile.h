@@ -1379,6 +1379,8 @@ template <class ELFT> Triple::ArchType ELFObjectFile<ELFT>::getArch() const {
     return IsLittleEndian ? Triple::aarch64 : Triple::aarch64_be;
   case ELF::EM_ARM:
     return Triple::arm;
+  case ELF::EM_TC32:
+    return Triple::tc32;
   case ELF::EM_AVR:
     return Triple::avr;
   case ELF::EM_HEXAGON:
