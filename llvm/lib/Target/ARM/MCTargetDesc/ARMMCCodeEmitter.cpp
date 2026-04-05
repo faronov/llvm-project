@@ -82,6 +82,20 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
     return static_cast<uint16_t>(0x0600u | Lo);
   }
 
+  uint16_t encodeTC32SpecialHiReg(MCRegister DstReg, MCRegister SrcReg,
+                                  uint16_t Base) const {
+    unsigned Dst = getTC32RegEncoding(DstReg);
+    unsigned Src = getTC32RegEncoding(SrcReg);
+    checkTC32Encoding(Dst < 16 && Src < 16, "high-reg op register out of range");
+
+    uint16_t Lo = 0;
+    if (Dst & 0x8)
+      Lo |= 0x80;
+    Lo |= static_cast<uint16_t>((Src & 0xF) << 3);
+    Lo |= static_cast<uint16_t>(Dst & 0x7);
+    return static_cast<uint16_t>(Base | Lo);
+  }
+
   uint16_t encodeTC32MOVi8(const MCInst &MI, unsigned ImmIdx) const {
     unsigned Dst = getTC32RegEncoding(MI.getOperand(0).getReg());
     int64_t Imm = MI.getOperand(ImmIdx).getImm();
@@ -283,7 +297,7 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
     unsigned Dst = getTC32RegEncoding(MI.getOperand(0).getReg());
     int64_t ImmWords = MI.getOperand(UseIdx + 1).getImm();
     checkTC32Encoding(Dst < 8, "tadd dst, sp requires low destination");
-    checkTC32Encoding(ImmWords >= 0 && ImmWords <= 63,
+    checkTC32Encoding(ImmWords >= 0 && ImmWords <= 255,
                       "tadd dst, sp immediate out of range");
     return static_cast<uint16_t>(((0x78u + Dst) << 8) |
                                  static_cast<uint16_t>(ImmWords));
@@ -404,11 +418,21 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
     case ARM::tMOVr:
       Bits16 = encodeTC32MOVrr(MI, Desc.getNumDefs());
       break;
+    case ARM::tADDhirr:
+      Bits16 = encodeTC32SpecialHiReg(MI.getOperand(0).getReg(),
+                                      MI.getOperand(Desc.getNumDefs() + 1).getReg(),
+                                      0x0400u);
+      break;
     case ARM::tMOVi8:
       Bits16 = encodeTC32MOVi8(MI, Desc.getNumDefs());
       break;
     case ARM::tMOVSr:
       Bits16 = encodeTC32MOVrr(MI, Desc.getNumDefs());
+      break;
+    case ARM::tCMPhir:
+      Bits16 = encodeTC32SpecialHiReg(MI.getOperand(Desc.getNumDefs()).getReg(),
+                                      MI.getOperand(Desc.getNumDefs() + 1).getReg(),
+                                      0x0500u);
       break;
     case ARM::tCMPi8:
       Bits16 = encodeTC32CMPi8(MI, Desc.getNumDefs());
@@ -489,6 +513,9 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
     case ARM::tASRrr:
       Bits16 = encodeTC32Logic2Addr(MI, Desc.getNumDefs(), 0x0100u);
       break;
+    case ARM::tROR:
+      Bits16 = encodeTC32Logic2Addr(MI, Desc.getNumDefs(), 0x01C0u);
+      break;
     case ARM::tLDRpci: {
       unsigned Dst = getTC32RegEncoding(MI.getOperand(0).getReg());
       checkTC32Encoding(Dst < 8, "literal load requires low destination");
@@ -500,6 +527,21 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
         int64_t Imm = Target.getImm();
         checkTC32Encoding((Imm & 3) == 0 && Imm >= 0 && Imm <= 1020,
                           "literal load immediate out of range");
+        Bits16 |= static_cast<uint16_t>(Imm >> 2);
+      }
+      break;
+    }
+    case ARM::tADR: {
+      unsigned Dst = getTC32RegEncoding(MI.getOperand(0).getReg());
+      checkTC32Encoding(Dst < 8, "adr requires low destination");
+      const MCOperand &Target = MI.getOperand(Desc.getNumDefs());
+      Bits16 = static_cast<uint16_t>(0xA000u | (Dst << 8));
+      if (Target.isExpr()) {
+        addTC32Fixup(Fixups, 0, Target.getExpr(), ARM::fixup_arm_thumb_cp);
+      } else {
+        int64_t Imm = Target.getImm();
+        checkTC32Encoding((Imm & 3) == 0 && Imm >= 0 && Imm <= 1020,
+                          "adr immediate out of range");
         Bits16 |= static_cast<uint16_t>(Imm >> 2);
       }
       break;
@@ -548,6 +590,9 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
       break;
     case ARM::tLDRSB:
       Bits16 = encodeTC32LoadStoreReg(MI, Desc.getNumDefs(), 0x1600u, true);
+      break;
+    case ARM::tLDRSH:
+      Bits16 = encodeTC32LoadStoreReg(MI, Desc.getNumDefs(), 0x1E00u, true);
       break;
     case ARM::tSUBspi:
       Bits16 = encodeTC32AddSubSP(MI, Desc.getNumDefs(), false);
