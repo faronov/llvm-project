@@ -1207,10 +1207,11 @@ void ARMELFStreamer::reset() {
   MCELFStreamer::reset();
   LastMappingSymbols.clear();
   LastEMSInfo.reset();
-  // MCELFStreamer clear's the assembler's e_flags. However, for
-  // arm we manually set the ABI version on streamer creation, so
-  // do the same here
-  getWriter().setELFHeaderEFlags(ELF::EF_ARM_EABI_VER5);
+  // MCELFStreamer clears the assembler's e_flags. Restore the ARM default,
+  // but keep TC32 objects flag-less to match vendor/GCC-produced input.
+  getWriter().setELFHeaderEFlags(getContext().getTargetTriple().isTC32()
+                                     ? 0
+                                     : ELF::EF_ARM_EABI_VER5);
 }
 
 inline void ARMELFStreamer::SwitchToEHSection(StringRef Prefix,
@@ -1549,10 +1550,11 @@ MCELFStreamer *createARMELFStreamer(MCContext &Context,
   ARMELFStreamer *S =
       new ARMELFStreamer(Context, std::move(TAB), std::move(OW),
                          std::move(Emitter), IsThumb, IsAndroid);
-  // FIXME: This should eventually end up somewhere else where more
-  // intelligent flag decisions can be made. For now we are just maintaining
-  // the status quo for ARM and setting EF_ARM_EABI_VER5 as the default.
-  S->getWriter().setELFHeaderEFlags(ELF::EF_ARM_EABI_VER5);
+  // Keep ARM objects at EF_ARM_EABI_VER5, but match vendor/GCC TC32 objects
+  // by leaving e_flags cleared.
+  S->getWriter().setELFHeaderEFlags(Context.getTargetTriple().isTC32()
+                                        ? 0
+                                        : ELF::EF_ARM_EABI_VER5);
 
   return S;
 }
