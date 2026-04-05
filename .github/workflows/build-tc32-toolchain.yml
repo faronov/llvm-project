@@ -105,13 +105,13 @@ jobs:
           cmake --version
           ninja --version
 
-      - name: Configure LLVM (Unix)
+      - name: Configure LLVM toolchain-only (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
-          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}-toolchain"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
           EXTRA_ARGS=""
           if [ "${{ matrix.build_32_bits }}" = "true" ]; then
@@ -134,12 +134,12 @@ jobs:
             -DCLANG_INCLUDE_TESTS=OFF \
             $EXTRA_ARGS
 
-      - name: Configure LLVM (Windows)
+      - name: Configure LLVM toolchain-only (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
-          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}-toolchain"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
           cmake -S llvm -B $buildDir -G Ninja `
             "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
@@ -157,33 +157,33 @@ jobs:
             "-DLLVM_BUILD_DOCS=OFF" `
             "-DCLANG_INCLUDE_TESTS=OFF"
 
-      - name: Build and install distribution (Unix)
+      - name: Build and install toolchain-only distribution (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
-          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}-toolchain"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           cmake --build "$BUILD_DIR" --target install llvm-config FileCheck --parallel
           install -m 755 "$BUILD_DIR/bin/llvm-config" "$INSTALL_DIR/bin/llvm-config"
           install -m 755 "$BUILD_DIR/bin/FileCheck" "$INSTALL_DIR/bin/FileCheck"
 
-      - name: Build and install distribution (Windows)
+      - name: Build and install toolchain-only distribution (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
-          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}-toolchain"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           cmake --build $buildDir --target install llvm-config FileCheck --parallel
           Copy-Item -Force (Join-Path $buildDir "bin/llvm-config.exe") (Join-Path $installDir "bin/llvm-config.exe")
           Copy-Item -Force (Join-Path $buildDir "bin/FileCheck.exe") (Join-Path $installDir "bin/FileCheck.exe")
 
-      - name: Strip binaries and remove extras (Unix)
+      - name: Strip toolchain-only binaries and remove extras (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           STRIP_TOOL="$INSTALL_DIR/bin/llvm-strip"
           find "$INSTALL_DIR" -type f \( -name '*.la' -o -name '*.pdb' \) -delete 2>/dev/null || true
           for d in "$INSTALL_DIR/share/man" "$INSTALL_DIR/share/info" "$INSTALL_DIR/share/doc" "$INSTALL_DIR/share/locale"; do
@@ -196,11 +196,11 @@ jobs:
               \( -perm -111 -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) -print0 2>/dev/null)
           fi
 
-      - name: Strip binaries and remove extras (Windows)
+      - name: Strip toolchain-only binaries and remove extras (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           $stripTool = Join-Path $installDir "bin/llvm-strip.exe"
           Get-ChildItem -Path $installDir -Recurse -Include *.pdb, *.la -File -ErrorAction SilentlyContinue | Remove-Item -Force
           foreach ($dir in @("share/man", "share/info", "share/doc", "share/locale")) {
@@ -217,33 +217,39 @@ jobs:
               }
           }
 
-      - name: Verify rustc_llvm static components (Unix)
+      - name: Verify toolchain-only install (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-${{ matrix.host }}.txt"
-          "$PREFIX/bin/llvm-config" --link-static --libs --system-libs $RUST_LLVM_COMPONENTS >/dev/null
-          test -f "$PREFIX/lib/libLLVMMCA.a"
-          test -f "$PREFIX/lib/libLLVMX86TargetMCA.a"
+          "$PREFIX/bin/llvm-config" --version >/dev/null
+          test -x "$PREFIX/bin/clang"
+          test -x "$PREFIX/bin/llc"
+          test -x "$PREFIX/bin/ld.lld"
+          test -x "$PREFIX/bin/llvm-objdump"
 
-      - name: Verify rustc_llvm static components (Windows)
+      - name: Verify toolchain-only install (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           & (Join-Path $prefix "bin/llvm-config.exe") --components |
             Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-${{ matrix.host }}.txt")
-          & (Join-Path $prefix "bin/llvm-config.exe") --link-static --libs --system-libs `
-            aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86 | Out-Null
+          & (Join-Path $prefix "bin/llvm-config.exe") --version | Out-Null
+          foreach ($tool in @("clang.exe", "llc.exe", "ld.lld.exe", "llvm-objdump.exe")) {
+            if (-not (Test-Path (Join-Path $prefix "bin/$tool"))) {
+              throw "Missing toolchain binary: $tool"
+            }
+          }
 
       - name: TC32 smoke test (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           TEST_DIR="$GITHUB_WORKSPACE/smoke/${{ matrix.host }}"
           mkdir -p "$TEST_DIR"
           "$PREFIX/bin/clang" --version
@@ -283,7 +289,7 @@ jobs:
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           $testDir = Join-Path $env:GITHUB_WORKSPACE "smoke/${{ matrix.host }}"
           New-Item -ItemType Directory -Force -Path $testDir | Out-Null
           & (Join-Path $prefix "bin/clang.exe") --version
@@ -323,15 +329,154 @@ jobs:
             throw "TC32 machine id was not found in llvm-readobj output."
           }
 
-      - name: Create size report and archive (Unix)
+      - name: Configure LLVM full install (Unix)
         if: ${{ !matrix.is_windows }}
         shell: bash
         run: |
           set -euo pipefail
-          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}-full"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
+          mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
+          EXTRA_ARGS=""
+          if [ "${{ matrix.build_32_bits }}" = "true" ]; then
+            EXTRA_ARGS="-DLLVM_BUILD_32_BITS=ON"
+          fi
+          cmake -S llvm -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+            -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
+            -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+            -DLLVM_TOOLCHAIN_TOOLS="$LLVM_TOOLCHAIN_TOOLS" \
+            -DLLVM_INCLUDE_TESTS=ON \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_BUILD_BENCHMARKS=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_BUILD_DOCS=OFF \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            $EXTRA_ARGS
+
+      - name: Configure LLVM full install (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}-full"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
+          New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
+          cmake -S llvm -B $buildDir -G Ninja `
+            "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
+            "-DCMAKE_INSTALL_PREFIX=$installDir" `
+            "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
+            "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
+            "-DLLVM_TOOLCHAIN_TOOLS=$env:LLVM_TOOLCHAIN_TOOLS" `
+            "-DLLVM_INCLUDE_TESTS=ON" `
+            "-DLLVM_INCLUDE_BENCHMARKS=OFF" `
+            "-DLLVM_INCLUDE_EXAMPLES=OFF" `
+            "-DLLVM_BUILD_TESTS=OFF" `
+            "-DLLVM_BUILD_BENCHMARKS=OFF" `
+            "-DLLVM_BUILD_EXAMPLES=OFF" `
+            "-DLLVM_BUILD_DOCS=OFF" `
+            "-DCLANG_INCLUDE_TESTS=OFF"
+
+      - name: Build and install full distribution (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}-full"
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
+          cmake --build "$BUILD_DIR" --target install llvm-config FileCheck --parallel
+          install -m 755 "$BUILD_DIR/bin/llvm-config" "$INSTALL_DIR/bin/llvm-config"
+          install -m 755 "$BUILD_DIR/bin/FileCheck" "$INSTALL_DIR/bin/FileCheck"
+
+      - name: Build and install full distribution (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}-full"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
+          cmake --build $buildDir --target install llvm-config FileCheck --parallel
+          Copy-Item -Force (Join-Path $buildDir "bin/llvm-config.exe") (Join-Path $installDir "bin/llvm-config.exe")
+          Copy-Item -Force (Join-Path $buildDir "bin/FileCheck.exe") (Join-Path $installDir "bin/FileCheck.exe")
+
+      - name: Strip full binaries and remove extras (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
+          STRIP_TOOL="$INSTALL_DIR/bin/llvm-strip"
+          find "$INSTALL_DIR" -type f \( -name '*.la' -o -name '*.pdb' \) -delete 2>/dev/null || true
+          for d in "$INSTALL_DIR/share/man" "$INSTALL_DIR/share/info" "$INSTALL_DIR/share/doc" "$INSTALL_DIR/share/locale"; do
+            rm -rf "$d"
+          done
+          if [ -x "$STRIP_TOOL" ]; then
+            while IFS= read -r -d '' f; do
+              "$STRIP_TOOL" "$f" 2>/dev/null || true
+            done < <(find "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" -type f \
+              \( -perm -111 -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) -print0 2>/dev/null)
+          fi
+
+      - name: Strip full binaries and remove extras (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
+          $stripTool = Join-Path $installDir "bin/llvm-strip.exe"
+          Get-ChildItem -Path $installDir -Recurse -Include *.pdb, *.la -File -ErrorAction SilentlyContinue | Remove-Item -Force
+          foreach ($dir in @("share/man", "share/info", "share/doc", "share/locale")) {
+            $full = Join-Path $installDir $dir
+            if (Test-Path $full) {
+              Remove-Item -Recurse -Force $full
+            }
+          }
+          if (Test-Path $stripTool) {
+            Get-ChildItem -Path (Join-Path $installDir "bin"), (Join-Path $installDir "lib") -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in @(".exe", ".dll") } |
+              ForEach-Object {
+                & $stripTool $_.FullName 2>$null
+              }
+          }
+
+      - name: Verify rustc_llvm static components (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
+          "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-full-${{ matrix.host }}.txt"
+          "$PREFIX/bin/llvm-config" --link-static --libs --system-libs $RUST_LLVM_COMPONENTS >/dev/null
+          test -f "$PREFIX/lib/libLLVMSupport.a"
+          test -f "$PREFIX/lib/libLLVMCore.a"
+          test -f "$PREFIX/lib/libLLVMMCA.a"
+          test -f "$PREFIX/lib/libLLVMX86TargetMCA.a"
+
+      - name: Verify rustc_llvm static components (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
+          & (Join-Path $prefix "bin/llvm-config.exe") --components |
+            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-full-${{ matrix.host }}.txt")
+          & (Join-Path $prefix "bin/llvm-config.exe") --link-static --libs --system-libs `
+            aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86 | Out-Null
+          foreach ($lib in @("LLVMSupport.lib", "LLVMCore.lib", "LLVMMCA.lib", "LLVMX86TargetMCA.lib")) {
+            if (-not (Test-Path (Join-Path $prefix "lib/$lib"))) {
+              throw "Missing Rust-compatible LLVM import/static library: $lib"
+            }
+          }
+
+      - name: Create toolchain-only size report and archive (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
           ARCHIVE="$GITHUB_WORKSPACE/tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}"
-          REPORT="$GITHUB_WORKSPACE/size-report-${{ matrix.host }}.txt"
+          REPORT="$GITHUB_WORKSPACE/size-report-toolchain-${{ matrix.host }}.txt"
           {
+            echo "Variant: toolchain-only"
             echo "Host: ${{ matrix.host }}"
             echo
             du -sh "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" "$INSTALL_DIR/share" 2>/dev/null
@@ -341,15 +486,16 @@ jobs:
           } > "$REPORT"
           tar -C "$INSTALL_DIR" -czf "$ARCHIVE" .
 
-      - name: Create size report and archive (Windows)
+      - name: Create toolchain-only size report and archive (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
-          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
           $archive = Join-Path $env:GITHUB_WORKSPACE "tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}"
-          $report = Join-Path $env:GITHUB_WORKSPACE "size-report-${{ matrix.host }}.txt"
+          $report = Join-Path $env:GITHUB_WORKSPACE "size-report-toolchain-${{ matrix.host }}.txt"
           $files = Get-ChildItem -Path $installDir -Recurse -File | Sort-Object Length -Descending
           @(
+            "Variant: toolchain-only"
             "Host: ${{ matrix.host }}"
             ""
             "Total bytes: $((Get-ChildItem -Path $installDir -Recurse -File | Measure-Object Length -Sum).Sum)"
@@ -362,16 +508,75 @@ jobs:
           }
           Compress-Archive -Path (Join-Path $installDir '*') -DestinationPath $archive
 
-      - name: Upload toolchain artifact
+      - name: Create Rust-compatible size report and archive (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
+          ARCHIVE="$GITHUB_WORKSPACE/tc32-llvm-rust-llvm-${{ matrix.host }}.${{ matrix.archive_ext }}"
+          REPORT="$GITHUB_WORKSPACE/size-report-rust-llvm-${{ matrix.host }}.txt"
+          LIB_COUNT="$(find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name 'libLLVM*.a' | wc -l | tr -d ' ')"
+          {
+            echo "Variant: rust-compatible full"
+            echo "Host: ${{ matrix.host }}"
+            echo "libLLVM static archive count: $LIB_COUNT"
+            echo
+            du -sh "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" "$INSTALL_DIR/share" 2>/dev/null
+            echo
+            echo "Top 30 largest files:"
+            find "$INSTALL_DIR" -type f -exec du -h {} + | sort -hr | sed -n '1,30p'
+          } > "$REPORT"
+          tar -C "$INSTALL_DIR" -czf "$ARCHIVE" .
+
+      - name: Create Rust-compatible size report and archive (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
+          $archive = Join-Path $env:GITHUB_WORKSPACE "tc32-llvm-rust-llvm-${{ matrix.host }}.${{ matrix.archive_ext }}"
+          $report = Join-Path $env:GITHUB_WORKSPACE "size-report-rust-llvm-${{ matrix.host }}.txt"
+          $files = Get-ChildItem -Path $installDir -Recurse -File | Sort-Object Length -Descending
+          $libCount = (Get-ChildItem -Path (Join-Path $installDir "lib") -Filter 'LLVM*.lib' -File -ErrorAction SilentlyContinue | Measure-Object).Count
+          @(
+            "Variant: rust-compatible full"
+            "Host: ${{ matrix.host }}"
+            "LLVM library count: $libCount"
+            ""
+            "Total bytes: $((Get-ChildItem -Path $installDir -Recurse -File | Measure-Object Length -Sum).Sum)"
+            ""
+            "Top 30 largest files:"
+            $files | Select-Object -First 30 | ForEach-Object { "{0}`t{1}" -f $_.Length, $_.FullName }
+          ) | Set-Content -Path $report
+          if (Test-Path $archive) {
+            Remove-Item -Force $archive
+          }
+          Compress-Archive -Path (Join-Path $installDir '*') -DestinationPath $archive
+
+      - name: Upload toolchain-only artifact
         uses: actions/upload-artifact@v4
         with:
           name: tc32-llvm-toolchain-${{ matrix.host }}
           path: tc32-llvm-toolchain-${{ matrix.host }}.${{ matrix.archive_ext }}
           if-no-files-found: error
 
-      - name: Upload size report
+      - name: Upload Rust-compatible artifact
         uses: actions/upload-artifact@v4
         with:
-          name: size-report-${{ matrix.host }}
-          path: size-report-${{ matrix.host }}.txt
+          name: tc32-llvm-rust-llvm-${{ matrix.host }}
+          path: tc32-llvm-rust-llvm-${{ matrix.host }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+      - name: Upload toolchain-only size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-toolchain-${{ matrix.host }}
+          path: size-report-toolchain-${{ matrix.host }}.txt
+          if-no-files-found: error
+
+      - name: Upload Rust-compatible size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-rust-llvm-${{ matrix.host }}
+          path: size-report-rust-llvm-${{ matrix.host }}.txt
           if-no-files-found: error
