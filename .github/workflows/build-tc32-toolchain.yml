@@ -36,11 +36,16 @@ jobs:
             archive_ext: tar.gz
             is_windows: false
             build_32_bits: false
-          - host: linux-i386
-            runs_on: ubuntu-latest
+          - host: linux-arm64
+            runs_on: ubuntu-24.04-arm
             archive_ext: tar.gz
             is_windows: false
-            build_32_bits: true
+            build_32_bits: false
+          # - host: linux-i386
+          #   runs_on: ubuntu-latest
+          #   archive_ext: tar.gz
+          #   is_windows: false
+          #   build_32_bits: true
           - host: macos-amd64
             runs_on: macos-15-intel
             archive_ext: tar.gz
@@ -284,9 +289,10 @@ jobs:
             -z max-page-size=0x8000 -z common-page-size=0x8000 `
             -o (Join-Path $testDir "start.elf") (Join-Path $testDir "start-llc.o")
           $header = & (Join-Path $prefix "bin/llvm-readobj.exe") --file-headers (Join-Path $testDir "start.elf")
-          $header | Set-Content -Path (Join-Path $testDir "readelf.txt")
-          if ($header -notmatch 'Machine:.*(8800|TC32)') {
-            throw "TC32 machine id was not found in llvm-readelf output."
+          $headerText = ($header -join "`n")
+          $headerText | Set-Content -Path (Join-Path $testDir "readobj.txt")
+          if ($headerText -notmatch 'Machine:\s+0x8800') {
+            throw "TC32 machine id was not found in llvm-readobj output."
           }
 
       - name: Create size report and archive (Unix)
