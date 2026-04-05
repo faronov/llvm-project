@@ -121,6 +121,13 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
     return static_cast<uint16_t>(0x0280u | (RHS << 3) | LHS);
   }
 
+  uint16_t encodeTC32CMNz(const MCInst &MI, unsigned SrcIdx) const {
+    unsigned LHS = getTC32RegEncoding(MI.getOperand(SrcIdx).getReg());
+    unsigned RHS = getTC32RegEncoding(MI.getOperand(SrcIdx + 1).getReg());
+    checkTC32Encoding(LHS < 8 && RHS < 8, "tcmpn register requires low regs");
+    return static_cast<uint16_t>(0x02C0u | (RHS << 3) | LHS);
+  }
+
   uint16_t encodeTC32ADDrrr(MCRegister DstReg, MCRegister SrcReg,
                             MCRegister RhsReg) const {
     unsigned Dst = getTC32RegEncoding(DstReg);
@@ -439,6 +446,9 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
       break;
     case ARM::tCMPr:
       Bits16 = encodeTC32CMPr(MI, Desc.getNumDefs());
+      break;
+    case ARM::tCMNz:
+      Bits16 = encodeTC32CMNz(MI, Desc.getNumDefs());
       break;
     case ARM::tADDrr:
       Bits16 = encodeTC32ADDrrr(MI.getOperand(0).getReg(),
