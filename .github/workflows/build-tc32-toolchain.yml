@@ -232,8 +232,6 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-toolchain"
-          "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-${{ matrix.host }}.txt"
-          "$PREFIX/bin/llvm-config" --system-libs > "$GITHUB_WORKSPACE/llvm-system-libs-${{ matrix.host }}.txt"
           "$PREFIX/bin/llvm-config" --version >/dev/null
           test -x "$PREFIX/bin/clang"
           test -x "$PREFIX/bin/llc"
@@ -245,10 +243,6 @@ jobs:
         shell: pwsh
         run: |
           $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-toolchain"
-          & (Join-Path $prefix "bin/llvm-config.exe") --components |
-            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-${{ matrix.host }}.txt")
-          & (Join-Path $prefix "bin/llvm-config.exe") --system-libs |
-            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-system-libs-${{ matrix.host }}.txt")
           & (Join-Path $prefix "bin/llvm-config.exe") --version | Out-Null
           foreach ($tool in @("clang.exe", "llc.exe", "ld.lld.exe", "llvm-objdump.exe")) {
             if (-not (Test-Path (Join-Path $prefix "bin/$tool"))) {
@@ -467,6 +461,7 @@ jobs:
           set -euo pipefail
           PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}-full"
           "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-full-${{ matrix.host }}.txt"
+          "$PREFIX/bin/llvm-config" --system-libs > "$GITHUB_WORKSPACE/llvm-system-libs-full-${{ matrix.host }}.txt"
           "$PREFIX/bin/llvm-config" --link-static --libs --system-libs $RUST_LLVM_COMPONENTS >/dev/null
           test -f "$PREFIX/lib/libLLVMSupport.a"
           test -f "$PREFIX/lib/libLLVMCore.a"
@@ -480,6 +475,8 @@ jobs:
           $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}-full"
           & (Join-Path $prefix "bin/llvm-config.exe") --components |
             Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-full-${{ matrix.host }}.txt")
+          & (Join-Path $prefix "bin/llvm-config.exe") --system-libs |
+            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-system-libs-full-${{ matrix.host }}.txt")
           & (Join-Path $prefix "bin/llvm-config.exe") --link-static --libs --system-libs `
             aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86 | Out-Null
           foreach ($lib in @("LLVMSupport.lib", "LLVMCore.lib", "LLVMMCA.lib", "LLVMX86TargetMCA.lib")) {
@@ -592,15 +589,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: size-report-toolchain-${{ matrix.host }}
-          path: |
-            size-report-toolchain-${{ matrix.host }}.txt
-            llvm-components-${{ matrix.host }}.txt
-            llvm-system-libs-${{ matrix.host }}.txt
+          path: size-report-toolchain-${{ matrix.host }}.txt
           if-no-files-found: error
 
       - name: Upload Rust-compatible size report
         uses: actions/upload-artifact@v4
         with:
           name: size-report-rust-llvm-${{ matrix.host }}
-          path: size-report-rust-llvm-${{ matrix.host }}.txt
+          path: |
+            size-report-rust-llvm-${{ matrix.host }}.txt
+            llvm-components-full-${{ matrix.host }}.txt
+            llvm-system-libs-full-${{ matrix.host }}.txt
           if-no-files-found: error
