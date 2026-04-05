@@ -3,7 +3,7 @@ name: Build TC32 LLVM Toolchain
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "tc32-as-thumb-extension" ]
     paths:
       - "llvm/**"
       - "clang/**"
@@ -20,7 +20,7 @@ concurrency:
 env:
   BUILD_TYPE: Release
   LLVM_ENABLE_PROJECTS: clang;lld
-  LLVM_TARGETS_TO_BUILD: ARM
+  LLVM_TARGETS_TO_BUILD: X86;AArch64;ARM
   LLVM_TOOLCHAIN_TOOLS: llc;opt;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readobj;llvm-size;llvm-strip
 
 jobs:
@@ -123,7 +123,7 @@ jobs:
             -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
             -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
             -DLLVM_TOOLCHAIN_TOOLS="$LLVM_TOOLCHAIN_TOOLS" \
-            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_TESTS=ON \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_BUILD_TESTS=OFF \
@@ -147,7 +147,7 @@ jobs:
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
             "-DLLVM_INSTALL_TOOLCHAIN_ONLY=ON" `
             "-DLLVM_TOOLCHAIN_TOOLS=$env:LLVM_TOOLCHAIN_TOOLS" `
-            "-DLLVM_INCLUDE_TESTS=OFF" `
+            "-DLLVM_INCLUDE_TESTS=ON" `
             "-DLLVM_INCLUDE_BENCHMARKS=OFF" `
             "-DLLVM_INCLUDE_EXAMPLES=OFF" `
             "-DLLVM_BUILD_TESTS=OFF" `
@@ -162,14 +162,20 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_DIR="$GITHUB_WORKSPACE/build/${{ matrix.host }}"
-          cmake --build "$BUILD_DIR" --target install --parallel
+          INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          cmake --build "$BUILD_DIR" --target install llvm-config FileCheck --parallel
+          install -m 755 "$BUILD_DIR/bin/llvm-config" "$INSTALL_DIR/bin/llvm-config"
+          install -m 755 "$BUILD_DIR/bin/FileCheck" "$INSTALL_DIR/bin/FileCheck"
 
       - name: Build and install distribution (Windows)
         if: matrix.is_windows
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:GITHUB_WORKSPACE "build/${{ matrix.host }}"
-          cmake --build $buildDir --target install --parallel
+          $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          cmake --build $buildDir --target install llvm-config FileCheck --parallel
+          Copy-Item -Force (Join-Path $buildDir "bin/llvm-config.exe") (Join-Path $installDir "bin/llvm-config.exe")
+          Copy-Item -Force (Join-Path $buildDir "bin/FileCheck.exe") (Join-Path $installDir "bin/FileCheck.exe")
 
       - name: Strip binaries and remove extras (Unix)
         if: ${{ !matrix.is_windows }}
