@@ -22,6 +22,7 @@ env:
   LLVM_ENABLE_PROJECTS: clang;lld
   LLVM_TARGETS_TO_BUILD: X86;AArch64;ARM
   LLVM_TOOLCHAIN_TOOLS: llc;opt;llvm-ar;llvm-nm;llvm-objcopy;llvm-objdump;llvm-ranlib;llvm-readobj;llvm-size;llvm-strip
+  RUST_LLVM_COMPONENTS: aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86
 
 jobs:
   build-toolchain:
@@ -184,7 +185,7 @@ jobs:
           set -euo pipefail
           INSTALL_DIR="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
           STRIP_TOOL="$INSTALL_DIR/bin/llvm-strip"
-          find "$INSTALL_DIR" -type f \( -name '*.a' -o -name '*.la' -o -name '*.pdb' \) -delete 2>/dev/null || true
+          find "$INSTALL_DIR" -type f \( -name '*.la' -o -name '*.pdb' \) -delete 2>/dev/null || true
           for d in "$INSTALL_DIR/share/man" "$INSTALL_DIR/share/info" "$INSTALL_DIR/share/doc" "$INSTALL_DIR/share/locale"; do
             rm -rf "$d"
           done
@@ -201,7 +202,7 @@ jobs:
         run: |
           $installDir = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
           $stripTool = Join-Path $installDir "bin/llvm-strip.exe"
-          Get-ChildItem -Path $installDir -Recurse -Include *.pdb -File -ErrorAction SilentlyContinue | Remove-Item -Force
+          Get-ChildItem -Path $installDir -Recurse -Include *.pdb, *.la -File -ErrorAction SilentlyContinue | Remove-Item -Force
           foreach ($dir in @("share/man", "share/info", "share/doc", "share/locale")) {
             $full = Join-Path $installDir $dir
             if (Test-Path $full) {
@@ -215,6 +216,27 @@ jobs:
                 & $stripTool $_.FullName 2>$null
               }
           }
+
+      - name: Verify rustc_llvm static components (Unix)
+        if: ${{ !matrix.is_windows }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$GITHUB_WORKSPACE/install/${{ matrix.host }}"
+          "$PREFIX/bin/llvm-config" --components > "$GITHUB_WORKSPACE/llvm-components-${{ matrix.host }}.txt"
+          "$PREFIX/bin/llvm-config" --link-static --libs --system-libs $RUST_LLVM_COMPONENTS >/dev/null
+          test -f "$PREFIX/lib/libLLVMMCA.a"
+          test -f "$PREFIX/lib/libLLVMX86TargetMCA.a"
+
+      - name: Verify rustc_llvm static components (Windows)
+        if: matrix.is_windows
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "install/${{ matrix.host }}"
+          & (Join-Path $prefix "bin/llvm-config.exe") --components |
+            Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "llvm-components-${{ matrix.host }}.txt")
+          & (Join-Path $prefix "bin/llvm-config.exe") --link-static --libs --system-libs `
+            aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86 | Out-Null
 
       - name: TC32 smoke test (Unix)
         if: ${{ !matrix.is_windows }}
