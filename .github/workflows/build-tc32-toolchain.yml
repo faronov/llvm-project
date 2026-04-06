@@ -150,7 +150,6 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
-            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL" `
             "-DLLVM_ENABLE_ZSTD=OFF" `
             "-DLLVM_ENABLE_LIBXML2=OFF" `
             "-DLLVM_ENABLE_LIBEDIT=OFF" `
@@ -379,7 +378,6 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
-            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL" `
             "-DLLVM_ENABLE_ZSTD=OFF" `
             "-DLLVM_ENABLE_LIBXML2=OFF" `
             "-DLLVM_ENABLE_LIBEDIT=OFF" `
