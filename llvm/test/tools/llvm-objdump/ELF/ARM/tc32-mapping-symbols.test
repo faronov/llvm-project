@@ -1,0 +1,48 @@
+# RUN: yaml2obj %s -o %t
+# RUN: llvm-objdump --triple=tc32 -D %t | FileCheck %s
+
+# CHECK:      Disassembly of section .text:
+# CHECK-EMPTY:
+# CHECK-NEXT: 00000000 <foo>:
+# CHECK-NEXT:        0: fe 87         tj
+# CHECK-NEXT:        2: 44 33 22 11   .word   0x11223344
+# CHECK-EMPTY:
+# CHECK-NEXT: Disassembly of section .rodata:
+# CHECK-EMPTY:
+# CHECK-NEXT: 00000000 <tbl>:
+# CHECK-NEXT:        0: 20 12 04 c3   .word   0xc3041220
+
+--- !ELF
+FileHeader:
+  Class:           ELFCLASS32
+  Data:            ELFDATA2LSB
+  Type:            ET_REL
+  Machine:         0x8800
+Sections:
+  - Name:            .text
+    Type:            SHT_PROGBITS
+    Flags:           [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign:    0x2
+    Content:         fe8744332211
+  - Name:            .rodata
+    Type:            SHT_PROGBITS
+    Flags:           [ SHF_ALLOC ]
+    AddressAlign:    0x4
+    Content:         201204c3
+Symbols:
+  - Name:            '$t'
+    Section:         .text
+  - Name:            foo
+    Type:            STT_FUNC
+    Binding:         STB_GLOBAL
+    Section:         .text
+    Value:           0x1
+  - Name:            '$d'
+    Section:         .text
+    Value:           0x2
+  - Name:            '$d.rodata'
+    Section:         .rodata
+  - Name:            tbl
+    Type:            STT_OBJECT
+    Binding:         STB_GLOBAL
+    Section:         .rodata

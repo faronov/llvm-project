@@ -615,8 +615,9 @@ uint64_t ELFObjectFile<ELFT>::getSymbolValueImpl(DataRefImpl Symb) const {
     return Ret;
 
   const Elf_Ehdr &Header = EF.getHeader();
-  // Clear the ARM/Thumb or microMIPS indicator flag.
-  if ((Header.e_machine == ELF::EM_ARM || Header.e_machine == ELF::EM_MIPS) &&
+  // Clear the ARM/Thumb, TC32/Thumb or microMIPS indicator flag.
+  if ((Header.e_machine == ELF::EM_ARM || Header.e_machine == ELF::EM_MIPS ||
+       Header.e_machine == ELF::EM_TC32) &&
       (*SymOrErr)->getType() == ELF::STT_FUNC)
     Ret &= ~1;
 
@@ -809,6 +810,17 @@ Expected<uint32_t> ELFObjectFile<ELFT>::getSymbolFlags(DataRefImpl Sym) const {
       // TODO Investigate why empty name symbols need to be marked.
       if (Name.empty() || Name.starts_with("$d") || Name.starts_with("$t") ||
           Name.starts_with("$a"))
+        Result |= SymbolRef::SF_FormatSpecific;
+    } else {
+      // TODO: Actually report errors helpfully.
+      consumeError(NameOrErr.takeError());
+    }
+    if (ESym->getType() == ELF::STT_FUNC && (ESym->st_value & 1) == 1)
+      Result |= SymbolRef::SF_Thumb;
+  } else if (EF.getHeader().e_machine == ELF::EM_TC32) {
+    if (Expected<StringRef> NameOrErr = getSymbolName(Sym)) {
+      StringRef Name = *NameOrErr;
+      if (Name.starts_with("$d") || Name.starts_with("$t"))
         Result |= SymbolRef::SF_FormatSpecific;
     } else {
       // TODO: Actually report errors helpfully.

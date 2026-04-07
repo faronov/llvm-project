@@ -147,6 +147,8 @@ private:
   DecodeStatus getThumbInstruction(MCInst &Instr, uint64_t &Size,
                                    ArrayRef<uint8_t> Bytes, uint64_t Address,
                                    raw_ostream &CStream) const;
+  DecodeStatus decodeTC32Instruction(MCInst &Instr, uint16_t Insn16,
+                                     uint64_t Address) const;
 
   bool isVectorPredicable(const MCInst &MI) const;
   DecodeStatus checkThumbPredicate(MCInst &) const;
@@ -181,6 +183,414 @@ static bool tryAddingSymbolicOperand(uint64_t Address, int32_t Value,
   return Decoder->tryAddingSymbolicOperand(MI, (uint32_t)Value, Address,
                                            isBranch, /*Offset=*/0, /*OpSize=*/0,
                                            InstSize);
+}
+
+static MCRegister decodeTC32Reg(unsigned RegNo) {
+  assert(RegNo < 16 && "invalid TC32 register");
+  static constexpr MCRegister Regs[] = {
+      ARM::R0,  ARM::R1, ARM::R2, ARM::R3, ARM::R4, ARM::R5, ARM::R6, ARM::R7,
+      ARM::R8,  ARM::R9, ARM::R10, ARM::R11, ARM::R12, ARM::SP, ARM::LR,
+      ARM::PC,
+  };
+  return Regs[RegNo];
+}
+
+static void addTC32PredicateOperands(MCInst &MI) {
+  MI.addOperand(MCOperand::createImm(ARMCC::AL));
+  MI.addOperand(MCOperand::createReg(ARM::NoRegister));
+}
+
+static void addTC32CCOutOperand(MCInst &MI) {
+  MI.addOperand(MCOperand::createReg(ARM::CPSR));
+}
+
+static void addTC32LowReg(MCInst &MI, unsigned RegNo) {
+  assert(RegNo < 8 && "expected low TC32 register");
+  MI.addOperand(MCOperand::createReg(decodeTC32Reg(RegNo)));
+}
+
+static void addTC32AnyReg(MCInst &MI, unsigned RegNo) {
+  MI.addOperand(MCOperand::createReg(decodeTC32Reg(RegNo)));
+}
+
+DecodeStatus ARMDisassembler::decodeTC32Instruction(MCInst &MI, uint16_t Insn16,
+                                                    uint64_t Address) const {
+  if (!STI.getTargetTriple().isTC32())
+    return MCDisassembler::Fail;
+
+  auto addJumpTarget = [&](unsigned Enc, unsigned Bits) {
+    int32_t Imm = SignExtend32(Bits + 1, Enc << 1);
+    if (!::tryAddingSymbolicOperand(Address, Address + Imm + 4, true, 2, MI,
+                                    this))
+      MI.addOperand(MCOperand::createImm(Imm));
+  };
+
+  auto addLowRegList = [&](uint8_t Mask) {
+    for (unsigned Reg = 0; Reg != 8; ++Reg)
+      if (Mask & (1u << Reg))
+        addTC32LowReg(MI, Reg);
+  };
+
+  if ((Insn16 & 0xF800u) == 0x8000u) {
+    MI.setOpcode(ARM::tB);
+    addJumpTarget(Insn16 & 0x07FFu, 12);
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0xC000u && (Insn16 & 0xFF00u) <= 0xCD00u) {
+    static constexpr ARMCC::CondCodes CondLut[] = {
+        ARMCC::EQ, ARMCC::NE, ARMCC::HS, ARMCC::LO, ARMCC::MI, ARMCC::PL,
+        ARMCC::VS, ARMCC::VC, ARMCC::HI, ARMCC::LS, ARMCC::GE, ARMCC::LT,
+        ARMCC::GT, ARMCC::LE};
+    unsigned CondIdx = (Insn16 >> 8) & 0xF;
+    if (CondIdx < std::size(CondLut)) {
+      MI.setOpcode(ARM::tBcc);
+      int32_t Imm = SignExtend32<9>((Insn16 & 0xFFu) << 1);
+      if (!::tryAddingSymbolicOperand(Address, Address + Imm + 4, true, 2, MI,
+                                      this))
+        MI.addOperand(MCOperand::createImm(Imm));
+      MI.addOperand(MCOperand::createImm(CondLut[CondIdx]));
+      MI.addOperand(MCOperand::createReg(ARM::CPSR));
+      return MCDisassembler::Success;
+    }
+  }
+
+  if ((Insn16 & 0xFFF8u) == 0x6BC0u) {
+    MI.setOpcode(ARM::tTC32MCSR);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFFF8u) == 0x6BD0u) {
+    MI.setOpcode(ARM::tTC32MSSR);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFFF8u) == 0x6BD8u) {
+    MI.setOpcode(ARM::tTC32MRSS);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    return MCDisassembler::Success;
+  }
+
+  if (Insn16 == 0x6900u) {
+    MI.setOpcode(ARM::tTC32RETI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF80u) == 0x6000u || (Insn16 & 0xFF80u) == 0x6080u) {
+    bool IsAdd = (Insn16 & 0x0080u) == 0;
+    MI.setOpcode(IsAdd ? ARM::tADDspi : ARM::tSUBspi);
+    MI.addOperand(MCOperand::createReg(ARM::SP));
+    MI.addOperand(MCOperand::createReg(ARM::SP));
+    MI.addOperand(MCOperand::createImm(Insn16 & 0x7Fu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0x7800u && (Insn16 & 0xFF00u) <= 0x7F00u) {
+    MI.setOpcode(ARM::tADDrSPi);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0x78u);
+    MI.addOperand(MCOperand::createReg(ARM::SP));
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0x6400u && (Insn16 & 0xFF00u) <= 0x6500u) {
+    MI.setOpcode((Insn16 & 0x0100u) ? ARM::tPUSH : ARM::tPUSH);
+    addTC32PredicateOperands(MI);
+    addLowRegList(Insn16 & 0xFFu);
+    if (Insn16 & 0x0100u)
+      MI.addOperand(MCOperand::createReg(ARM::LR));
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0x6C00u && (Insn16 & 0xFF00u) <= 0x6D00u) {
+    MI.setOpcode(ARM::tPOP);
+    addTC32PredicateOperands(MI);
+    addLowRegList(Insn16 & 0xFFu);
+    if (Insn16 & 0x0100u)
+      MI.addOperand(MCOperand::createReg(ARM::PC));
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF800u) == 0xD000u || (Insn16 & 0xF800u) == 0xD800u) {
+    bool IsLoad = (Insn16 & 0x0800u) != 0;
+    MI.setOpcode(IsLoad ? ARM::tLDMIA : ARM::tSTMIA_UPD);
+    addTC32LowReg(MI, (Insn16 >> 8) & 0x7);
+    if (!IsLoad)
+      addTC32LowReg(MI, (Insn16 >> 8) & 0x7);
+    addTC32PredicateOperands(MI);
+    addLowRegList(Insn16 & 0xFFu);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0xA000u && (Insn16 & 0xFF00u) <= 0xA700u) {
+    MI.setOpcode(ARM::tMOVi8);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xA0u);
+    addTC32CCOutOperand(MI);
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0xA800u && (Insn16 & 0xFF00u) <= 0xAF00u) {
+    MI.setOpcode(ARM::tCMPi8);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xA8u);
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0x3000u && (Insn16 & 0xFF00u) <= 0x3F00u) {
+    bool IsLoad = (Insn16 & 0x0800u) != 0;
+    MI.setOpcode(IsLoad ? ARM::tLDRspi : ARM::tSTRspi);
+    addTC32LowReg(MI, (Insn16 >> 8) & 0x7);
+    MI.addOperand(MCOperand::createReg(ARM::SP));
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF800u) == 0x5000u || (Insn16 & 0xF800u) == 0x5800u) {
+    bool IsLoad = (Insn16 & 0x0800u) != 0;
+    MI.setOpcode(IsLoad ? ARM::tLDRi : ARM::tSTRi);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 3) & 0x7);
+    MI.addOperand(MCOperand::createImm((Insn16 >> 6) & 0x1Fu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF800u) == 0x4000u || (Insn16 & 0xF800u) == 0x4800u) {
+    bool IsLoad = (Insn16 & 0x0800u) != 0;
+    MI.setOpcode(IsLoad ? ARM::tLDRBi : ARM::tSTRBi);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 3) & 0x7);
+    MI.addOperand(MCOperand::createImm((Insn16 >> 6) & 0x1Fu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF800u) == 0x2000u || (Insn16 & 0xF800u) == 0x2800u) {
+    bool IsLoad = (Insn16 & 0x0800u) != 0;
+    MI.setOpcode(IsLoad ? ARM::tLDRHi : ARM::tSTRHi);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 3) & 0x7);
+    MI.addOperand(MCOperand::createImm((Insn16 >> 6) & 0x1Fu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFE00u) == 0x1000u || (Insn16 & 0xFE00u) == 0x1200u ||
+      (Insn16 & 0xFE00u) == 0x1400u || (Insn16 & 0xFE00u) == 0x1600u ||
+      (Insn16 & 0xFE00u) == 0x1800u || (Insn16 & 0xFE00u) == 0x1A00u ||
+      (Insn16 & 0xFE00u) == 0x1C00u || (Insn16 & 0xFE00u) == 0x1E00u) {
+    switch (Insn16 & 0xFE00u) {
+    case 0x1000u: MI.setOpcode(ARM::tSTRr); break;
+    case 0x1200u: MI.setOpcode(ARM::tSTRHr); break;
+    case 0x1400u: MI.setOpcode(ARM::tSTRBr); break;
+    case 0x1600u: MI.setOpcode(ARM::tLDRSB); break;
+    case 0x1800u: MI.setOpcode(ARM::tLDRr); break;
+    case 0x1A00u: MI.setOpcode(ARM::tLDRHr); break;
+    case 0x1C00u: MI.setOpcode(ARM::tLDRBr); break;
+    case 0x1E00u: MI.setOpcode(ARM::tLDRSH); break;
+    default: llvm_unreachable("handled above");
+    }
+    addTC32LowReg(MI, Insn16 & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 3) & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 6) & 0x7);
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF000u) == 0xF000u ||
+      (Insn16 & 0xF800u) == 0xF800u ||
+      (Insn16 & 0xF800u) == 0xE000u) {
+    unsigned Imm = ((Insn16 >> 8) & 0x7) << 2 | ((Insn16 >> 6) & 0x3);
+    unsigned Dst = Insn16 & 0x7;
+    unsigned Src = (Insn16 >> 3) & 0x7;
+    if ((Insn16 & 0xF000u) == 0xF000u) {
+      MI.setOpcode(ARM::tLSLri);
+    } else if ((Insn16 & 0xF800u) == 0xF800u) {
+      MI.setOpcode(ARM::tLSRri);
+      if (Imm == 0)
+        Imm = 32;
+    } else {
+      MI.setOpcode(ARM::tASRri);
+      if (Imm == 0)
+        Imm = 32;
+    }
+    addTC32LowReg(MI, Dst);
+    addTC32CCOutOperand(MI);
+    addTC32LowReg(MI, Src);
+    MI.addOperand(MCOperand::createImm(Imm));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFC00u) == 0xEC00u) {
+    unsigned Dst = Insn16 & 0x7;
+    unsigned Src = (Insn16 >> 3) & 0x7;
+    unsigned HiBits = (Insn16 >> 8) & 0x3;
+    if (HiBits == 0) {
+      MI.setOpcode(ARM::tMOVr);
+      addTC32LowReg(MI, Dst);
+      addTC32LowReg(MI, Src);
+      addTC32PredicateOperands(MI);
+      return MCDisassembler::Success;
+    }
+
+    if (HiBits == 1 || HiBits == 2) {
+      bool SameReg = (Insn16 & 0x40u) == 0;
+      unsigned ImmOrRhs = (Insn16 >> 6) & 0x3;
+      unsigned FullSrc = (Insn16 >> 3) & 0x7;
+      if (SameReg) {
+        MI.setOpcode(HiBits == 1 ? ARM::tADDi3 : ARM::tSUBi3);
+        addTC32LowReg(MI, Dst);
+        addTC32CCOutOperand(MI);
+        addTC32LowReg(MI, FullSrc);
+        MI.addOperand(MCOperand::createImm(ImmOrRhs));
+        addTC32PredicateOperands(MI);
+      } else {
+        MI.setOpcode(HiBits == 1 ? ARM::tADDrr : ARM::tSUBrr);
+        addTC32LowReg(MI, Dst);
+        addTC32CCOutOperand(MI);
+        addTC32LowReg(MI, FullSrc);
+        addTC32LowReg(MI, ImmOrRhs);
+        addTC32PredicateOperands(MI);
+      }
+      return MCDisassembler::Success;
+    }
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0xB000u && (Insn16 & 0xFF00u) <= 0xB700u) {
+    MI.setOpcode(ARM::tADDi8);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xB0u);
+    addTC32CCOutOperand(MI);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xB0u);
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) >= 0xB800u && (Insn16 & 0xFF00u) <= 0xBF00u) {
+    MI.setOpcode(ARM::tSUBi8);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xB8u);
+    addTC32CCOutOperand(MI);
+    addTC32LowReg(MI, (Insn16 >> 8) - 0xB8u);
+    MI.addOperand(MCOperand::createImm(Insn16 & 0xFFu));
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFFC0u) == 0x0000u || (Insn16 & 0xFFC0u) == 0x0040u ||
+      (Insn16 & 0xFFC0u) == 0x0080u || (Insn16 & 0xFFC0u) == 0x00C0u ||
+      (Insn16 & 0xFFC0u) == 0x0100u || (Insn16 & 0xFFC0u) == 0x0140u ||
+      (Insn16 & 0xFFC0u) == 0x0180u || (Insn16 & 0xFFC0u) == 0x01C0u ||
+      (Insn16 & 0xFFC0u) == 0x0280u || (Insn16 & 0xFFC0u) == 0x02C0u ||
+      (Insn16 & 0xFFC0u) == 0x0300u || (Insn16 & 0xFFC0u) == 0x0340u ||
+      (Insn16 & 0xFFC0u) == 0x0380u || (Insn16 & 0xFFC0u) == 0x03C0u) {
+    unsigned Base = Insn16 & 0xFFC0u;
+    unsigned Dst = Insn16 & 0x7;
+    unsigned Src = (Insn16 >> 3) & 0x7;
+    switch (Base) {
+    case 0x0000u: MI.setOpcode(ARM::tAND); break;
+    case 0x0040u: MI.setOpcode(ARM::tEOR); break;
+    case 0x0080u: MI.setOpcode(ARM::tLSLrr); break;
+    case 0x00C0u: MI.setOpcode(ARM::tLSRrr); break;
+    case 0x0100u: MI.setOpcode(ARM::tASRrr); break;
+    case 0x0140u: MI.setOpcode(ARM::tADC); break;
+    case 0x0180u: MI.setOpcode(ARM::tSBC); break;
+    case 0x01C0u: MI.setOpcode(ARM::tROR); break;
+    case 0x0280u: MI.setOpcode(ARM::tCMPr); break;
+    case 0x02C0u: MI.setOpcode(ARM::tCMNz); break;
+    case 0x0300u: MI.setOpcode(ARM::tORR); break;
+    case 0x0340u: MI.setOpcode(ARM::tMUL); break;
+    case 0x0380u: MI.setOpcode(ARM::tBIC); break;
+    case 0x03C0u: MI.setOpcode(ARM::tMVN); break;
+    default: llvm_unreachable("handled above");
+    }
+
+    if (Base == 0x0280u || Base == 0x02C0u) {
+      addTC32LowReg(MI, Dst);
+      addTC32LowReg(MI, Src);
+      addTC32PredicateOperands(MI);
+    } else if (Base == 0x03C0u) {
+      addTC32LowReg(MI, Dst);
+      addTC32CCOutOperand(MI);
+      addTC32LowReg(MI, Src);
+      addTC32PredicateOperands(MI);
+    } else if (Base == 0x0340u) {
+      addTC32LowReg(MI, Dst);
+      addTC32CCOutOperand(MI);
+      addTC32LowReg(MI, Src);
+      addTC32LowReg(MI, Dst);
+      addTC32PredicateOperands(MI);
+    } else {
+      addTC32LowReg(MI, Dst);
+      addTC32CCOutOperand(MI);
+      addTC32LowReg(MI, Dst);
+      addTC32LowReg(MI, Src);
+      addTC32PredicateOperands(MI);
+    }
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xFF00u) == 0xE800u || (Insn16 & 0xFF00u) == 0xE900u ||
+      (Insn16 & 0xFF00u) == 0xEA00u || (Insn16 & 0xFF00u) == 0xEB00u) {
+    bool IsAdd = (Insn16 & 0x0200u) == 0;
+    MI.setOpcode(IsAdd ? ARM::tADDrr : ARM::tSUBrr);
+    addTC32LowReg(MI, Insn16 & 0x7);
+    addTC32CCOutOperand(MI);
+    addTC32LowReg(MI, (Insn16 >> 3) & 0x7);
+    addTC32LowReg(MI, (Insn16 >> 6) & 0x7);
+    addTC32PredicateOperands(MI);
+    return MCDisassembler::Success;
+  }
+
+  if ((Insn16 & 0xF000u) == 0x0000u || (Insn16 & 0xFF00u) == 0x0600u ||
+      (Insn16 & 0xFF00u) == 0x0700u) {
+    unsigned Dst = Insn16 & 0x7;
+    unsigned Src = ((Insn16 >> 6) & 0x1) << 3 | ((Insn16 >> 3) & 0x7);
+    unsigned DstHi = (Insn16 >> 7) & 0x1;
+
+    if ((Insn16 & 0xFF87u) == 0x0700u) {
+      MI.setOpcode(ARM::tBX);
+      addTC32AnyReg(MI, Src);
+      addTC32PredicateOperands(MI);
+      return MCDisassembler::Success;
+    }
+
+    if ((Insn16 & 0xF700u) == 0x0600u) {
+      MI.setOpcode(ARM::tMOVr);
+      addTC32AnyReg(MI, Dst | (DstHi << 3));
+      addTC32AnyReg(MI, Src);
+      addTC32PredicateOperands(MI);
+      return MCDisassembler::Success;
+    }
+
+    if ((Insn16 & 0xF700u) == 0x0400u) {
+      MI.setOpcode(ARM::tADDhirr);
+      addTC32AnyReg(MI, Dst | (DstHi << 3));
+      addTC32AnyReg(MI, Dst | (DstHi << 3));
+      addTC32AnyReg(MI, Src);
+      addTC32PredicateOperands(MI);
+      return MCDisassembler::Success;
+    }
+
+    if ((Insn16 & 0xF700u) == 0x0500u) {
+      MI.setOpcode(ARM::tCMPhir);
+      addTC32AnyReg(MI, Dst | (DstHi << 3));
+      addTC32AnyReg(MI, Src);
+      addTC32PredicateOperands(MI);
+      return MCDisassembler::Success;
+    }
+  }
+
+  return MCDisassembler::Fail;
 }
 
 /// tryAddingPcLoadReferenceComment - trys to add a comment as to what is being
@@ -6365,8 +6775,14 @@ DecodeStatus ARMDisassembler::getThumbInstruction(MCInst &MI, uint64_t &Size,
 
   uint16_t Insn16 = llvm::support::endian::read<uint16_t>(
       Bytes.data(), InstructionEndianness);
-  DecodeStatus Result =
-      decodeInstruction(DecoderTableThumb16, MI, Insn16, Address, this, STI);
+  DecodeStatus Result = decodeTC32Instruction(MI, Insn16, Address);
+  if (Result != MCDisassembler::Fail) {
+    Size = 2;
+    return Result;
+  }
+
+  Result = decodeInstruction(DecoderTableThumb16, MI, Insn16, Address, this,
+                             STI);
   if (Result != MCDisassembler::Fail) {
     Size = 2;
     Check(Result, checkThumbPredicate(MI));

@@ -93,6 +93,30 @@ void ARMInstPrinter::printInst(const MCInst *MI, uint64_t Address,
     return;
   }
 
+  switch (MI->getOpcode()) {
+  case ARM::tTC32MCSR:
+    O << "tmcsr\t";
+    printOperand(MI, 0, STI, O);
+    printAnnotation(O, Annot);
+    return;
+  case ARM::tTC32MRSS:
+    O << "tmrss\t";
+    printOperand(MI, 0, STI, O);
+    printAnnotation(O, Annot);
+    return;
+  case ARM::tTC32MSSR:
+    O << "tmssr\t";
+    printOperand(MI, 0, STI, O);
+    printAnnotation(O, Annot);
+    return;
+  case ARM::tTC32RETI:
+    O << "treti\t{r15}";
+    printAnnotation(O, Annot);
+    return;
+  default:
+    break;
+  }
+
   std::string Buffer;
   raw_string_ostream BufOS(Buffer);
   printInstInner(MI, Address, Annot, STI, BufOS);
