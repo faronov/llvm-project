@@ -6564,6 +6564,32 @@ bool ARMAsmParser::parsePrefix(ARM::Specifier &Spec) {
   return false;
 }
 
+static StringRef normalizeVendorTC32Mnemonic(StringRef Mnemonic) {
+  // TC32 vendor assembly uses a Thumb-like instruction set but prefixes many
+  // mnemonics with 't'. Normalize the simple 1:1 cases here so the existing
+  // ARM/Thumb matcher can handle them.
+  return StringSwitch<StringRef>(Mnemonic)
+      .Case("tj", "b")
+      .Case("tjl", "bl")
+      .Case("tjex", "bx")
+      .Case("tjeq", "beq")
+      .Case("tjge", "bge")
+      .Case("tjle", "ble")
+      .Case("tcmp", "cmp")
+      .Case("tadd", "adds")
+      .Case("tmov", "mov")
+      .Case("tmovs", "movs")
+      .Case("tpush", "push")
+      .Case("tpop", "pop")
+      .Case("tloadr", "ldr")
+      .Case("tloadrb", "ldrb")
+      .Case("tstorer", "str")
+      .Case("tstorerb", "strb")
+      .Case("tshftl", "lsls")
+      .Case("tshftr", "lsrs")
+      .Default(Mnemonic);
+}
+
 /// Given a mnemonic, split out possible predication code and carry
 /// setting letters to form a canonical mnemonic and flags.
 //
@@ -6575,6 +6601,7 @@ StringRef ARMAsmParser::splitMnemonic(StringRef Mnemonic, StringRef ExtraToken,
                                       bool &CarrySetting,
                                       unsigned &ProcessorIMod,
                                       StringRef &ITMask) {
+  Mnemonic = normalizeVendorTC32Mnemonic(Mnemonic);
   PredicationCode = ARMCC::AL;
   VPTPredicationCode = ARMVCC::None;
   CarrySetting = false;
@@ -6605,7 +6632,10 @@ StringRef ARMAsmParser::splitMnemonic(StringRef Mnemonic, StringRef ExtraToken,
       Mnemonic == "csinc" || Mnemonic == "csinv" || Mnemonic == "csneg" ||
       Mnemonic == "cinc" || Mnemonic == "cinv" || Mnemonic == "cneg" ||
       Mnemonic == "cset" || Mnemonic == "csetm" || Mnemonic == "aut" ||
-      Mnemonic == "pac" || Mnemonic == "pacbti" || Mnemonic == "bti")
+      Mnemonic == "pac" || Mnemonic == "pacbti" || Mnemonic == "bti" ||
+      (getSTI().getTargetTriple().isTC32() &&
+       (Mnemonic == "tmrss" || Mnemonic == "tmssr" || Mnemonic == "tmcsr" ||
+        Mnemonic == "treti")))
     return Mnemonic;
 
   // First, split out any predication code. Ignore mnemonics we know aren't
@@ -7258,7 +7288,40 @@ bool ARMAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
   unsigned MnemonicOpsEndInd = Operands.size();
 
   // Read the remaining operands.
-  if (getLexer().isNot(AsmToken::EndOfStatement)) {
+  bool ParsedOperands = false;
+  if (getSTI().getTargetTriple().getArchName() == "tc32" &&
+      Name == "tloadr" && getLexer().isNot(AsmToken::EndOfStatement)) {
+    if (parseOperand(Operands, Mnemonic))
+      return true;
+    if (parseToken(AsmToken::Comma, "unexpected token in argument list"))
+      return true;
+    if (Parser.getTok().isNot(AsmToken::LBrac) &&
+        Parser.getTok().isNot(AsmToken::Equal)) {
+      SMLoc S = Parser.getTok().getLoc();
+      const MCExpr *SubExprVal;
+      if (getParser().parseExpression(SubExprVal))
+        return true;
+      SMLoc E =
+          SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
+      Operands.push_back(
+          ARMOperand::CreateConstantPoolImm(SubExprVal, S, E, *this));
+      ParsedOperands = true;
+    }
+  }
+
+  if (!ParsedOperands && getSTI().getTargetTriple().getArchName() == "tc32" &&
+      Name == "treti" && getLexer().isNot(AsmToken::EndOfStatement)) {
+    if (parseToken(AsmToken::LCurly, "expected '{' after 'treti'"))
+      return true;
+    MCRegister Reg = tryParseRegister();
+    if (Reg != ARM::PC)
+      return Error(Parser.getTok().getLoc(), "expected '{r15}' after 'treti'");
+    if (parseToken(AsmToken::RCurly, "expected '}' after register list"))
+      return true;
+    ParsedOperands = true;
+  }
+
+  if (!ParsedOperands && getLexer().isNot(AsmToken::EndOfStatement)) {
     // Read the first operand.
     if (parseOperand(Operands, Mnemonic)) {
       return true;
@@ -11431,6 +11494,23 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                            OperandVector &Operands,
                                            MCStreamer &Out, uint64_t &ErrorInfo,
                                            bool MatchingInlineAsm) {
+  auto retryWithMnemonic = [&](StringRef RetryMnemonic, MCInst &RetryInst,
+                               bool &RetryPendConditionalInstruction,
+                               SmallVectorImpl<NearMissInfo> &RetryNearMisses)
+      -> unsigned {
+    if (Operands.empty() || !Operands[0]->isToken())
+      return Match_InvalidOperand;
+    auto &MnemonicOp = static_cast<ARMOperand &>(*Operands[0]);
+    auto SavedToken = MnemonicOp.getToken().str();
+    auto SavedStart = MnemonicOp.getStartLoc();
+    Operands[0] = ARMOperand::CreateToken(RetryMnemonic, SavedStart, *this);
+    unsigned RetryResult =
+        MatchInstruction(Operands, RetryInst, RetryNearMisses, MatchingInlineAsm,
+                         RetryPendConditionalInstruction, Out);
+    Operands[0] = ARMOperand::CreateToken(SavedToken, SavedStart, *this);
+    return RetryResult;
+  };
+
   MCInst Inst;
   unsigned MatchResult;
   bool PendConditionalInstruction = false;
@@ -11438,6 +11518,27 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   SmallVector<NearMissInfo, 4> NearMisses;
   MatchResult = MatchInstruction(Operands, Inst, NearMisses, MatchingInlineAsm,
                                  PendConditionalInstruction, Out);
+
+  if (MatchResult != Match_Success &&
+      getSTI().getTargetTriple().getArchName() == "tc32" && !Operands.empty() &&
+      Operands[0]->isToken()) {
+    StringRef Mnemonic = static_cast<ARMOperand &>(*Operands[0]).getToken();
+    if (Mnemonic == "mov") {
+      SmallVector<NearMissInfo, 4> RetryNearMisses;
+      MCInst RetryInst;
+      bool RetryPendConditionalInstruction = false;
+      unsigned RetryResult = retryWithMnemonic("movs", RetryInst,
+                                               RetryPendConditionalInstruction,
+                                               RetryNearMisses);
+      if (RetryResult == Match_Success) {
+        Inst = std::move(RetryInst);
+        NearMisses = std::move(RetryNearMisses);
+        PendConditionalInstruction = RetryPendConditionalInstruction;
+        MatchResult = RetryResult;
+        Operands[0] = ARMOperand::CreateToken("movs", IDLoc, *this);
+      }
+    }
+  }
 
   // Find the number of operators that are part of the Mnumonic (LHS).
   unsigned MnemonicOpsEndInd = getMnemonicOpsEndInd(Operands);

@@ -319,6 +319,13 @@ class T1SystemEncoding<bits<8> opc>
   let Inst{7-0} = opc;
 }
 
+class TC32SpecialLoReg<bits<13> opc, dag oops, dag iops, string asm>
+  : T1I<oops, iops, NoItinerary, asm, []>, Encoding16 {
+  bits<3> Rd;
+  let Inst{15-3} = opc;
+  let Inst{2-0} = Rd;
+}
+
 def tHINT : T1pI<(outs), (ins imm0_15:$imm), NoItinerary, "hint", "\t$imm",
                  [(int_arm_hint imm0_15:$imm)]>,
             T1SystemEncoding<0x00>,
@@ -339,6 +346,21 @@ def : tHintAlias<"wfi$p", (tHINT 3, pred:$p), 1>; // A8.6.409
 def : tHintAlias<"sev$p", (tHINT 4, pred:$p), 1>; // A8.6.157
 def : tInstAlias<"sevl$p", (tHINT 5, pred:$p), 1> {
   let Predicates = [IsThumb2, HasV8];
+}
+
+let hasSideEffects = 1 in {
+def tTC32MCSR : TC32SpecialLoReg<0b0110101111000, (outs), (ins tGPR:$Rd),
+                                 "tmcsr\t$Rd">, Sched<[WriteALU]>;
+def tTC32MSSR : TC32SpecialLoReg<0b0110101111010, (outs), (ins tGPR:$Rd),
+                                 "tmssr\t$Rd">, Sched<[WriteALU]>;
+def tTC32MRSS : TC32SpecialLoReg<0b0110101111011, (outs tGPR:$Rd), (ins),
+                                 "tmrss\t$Rd">, Sched<[WriteALU]>;
+}
+
+let hasSideEffects = 1, isTerminator = 1, isBarrier = 1, isReturn = 1 in
+def tTC32RETI : T1I<(outs), (ins), NoItinerary, "treti", []>, Encoding16,
+                Sched<[WriteBr]> {
+  let Inst{15-0} = 0b0110100100000000;
 }
 
 // The imm operand $val can be used by a debugger to store more information

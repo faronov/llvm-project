@@ -632,6 +632,21 @@ class ARMMCCodeEmitter : public MCCodeEmitter {
       Bits16 = static_cast<uint16_t>(0x0700u |
                                      (getTC32RegEncoding(MI.getOperand(0).getReg()) << 3));
       break;
+    case ARM::tTC32MCSR:
+      Bits16 = static_cast<uint16_t>(0x6BC0u |
+                                     getTC32RegEncoding(MI.getOperand(0).getReg()));
+      break;
+    case ARM::tTC32MRSS:
+      Bits16 = static_cast<uint16_t>(0x6BD8u |
+                                     getTC32RegEncoding(MI.getOperand(0).getReg()));
+      break;
+    case ARM::tTC32MSSR:
+      Bits16 = static_cast<uint16_t>(0x6BD0u |
+                                     getTC32RegEncoding(MI.getOperand(0).getReg()));
+      break;
+    case ARM::tTC32RETI:
+      Bits16 = 0x6900u;
+      break;
     case ARM::tB:
       Bits16 = encodeTC32Jump(MI, Fixups);
       break;
