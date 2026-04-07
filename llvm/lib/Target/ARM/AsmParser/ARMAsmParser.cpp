@@ -6573,20 +6573,50 @@ static StringRef normalizeVendorTC32Mnemonic(StringRef Mnemonic) {
       .Case("tjl", "bl")
       .Case("tjex", "bx")
       .Case("tjeq", "beq")
+      .Case("tjne", "bne")
+      .Case("tjhs", "bhs")
+      .Case("tjlo", "blo")
+      .Case("tjmi", "bmi")
+      .Case("tjpl", "bpl")
+      .Case("tjvs", "bvs")
+      .Case("tjvc", "bvc")
+      .Case("tjhi", "bhi")
+      .Case("tjls", "bls")
       .Case("tjge", "bge")
+      .Case("tjlt", "blt")
+      .Case("tjgt", "bgt")
       .Case("tjle", "ble")
       .Case("tcmp", "cmp")
+      .Case("tcmpn", "cmn")
       .Case("tadd", "adds")
+      .Case("taddc", "adcs")
       .Case("tmov", "mov")
       .Case("tmovs", "movs")
+      .Case("tmovn", "mvns")
       .Case("tpush", "push")
       .Case("tpop", "pop")
+      .Case("tloadm", "ldm")
       .Case("tloadr", "ldr")
       .Case("tloadrb", "ldrb")
+      .Case("tloadrh", "ldrh")
+      .Case("tloadrsb", "ldrsb")
+      .Case("tloadrsh", "ldrsh")
+      .Case("tstorem", "stm")
       .Case("tstorer", "str")
       .Case("tstorerb", "strb")
+      .Case("tstorerh", "strh")
+      .Case("tand", "ands")
+      .Case("txor", "eors")
+      .Case("tor", "orrs")
+      .Case("tbclr", "bics")
       .Case("tshftl", "lsls")
       .Case("tshftr", "lsrs")
+      .Case("tasr", "asrs")
+      .Case("trotr", "rors")
+      .Case("tmul", "muls")
+      .Case("tsub", "subs")
+      .Case("tsubc", "sbcs")
+      .Case("tmrcs", "tmrss")
       .Default(Mnemonic);
 }
 
@@ -6602,6 +6632,16 @@ StringRef ARMAsmParser::splitMnemonic(StringRef Mnemonic, StringRef ExtraToken,
                                       unsigned &ProcessorIMod,
                                       StringRef &ITMask) {
   Mnemonic = normalizeVendorTC32Mnemonic(Mnemonic);
+  if (getSTI().getTargetTriple().isTC32()) {
+    Mnemonic = StringSwitch<StringRef>(Mnemonic)
+                   .Case("and", "ands")
+                   .Case("eor", "eors")
+                   .Case("orr", "orrs")
+                   .Case("bic", "bics")
+                   .Case("mvn", "mvns")
+                   .Case("mul", "muls")
+                   .Default(Mnemonic);
+  }
   PredicationCode = ARMCC::AL;
   VPTPredicationCode = ARMVCC::None;
   CarrySetting = false;
@@ -11523,11 +11563,21 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
       getSTI().getTargetTriple().getArchName() == "tc32" && !Operands.empty() &&
       Operands[0]->isToken()) {
     StringRef Mnemonic = static_cast<ARMOperand &>(*Operands[0]).getToken();
-    if (Mnemonic == "mov") {
+    StringRef RetryMnemonic =
+        StringSwitch<StringRef>(Mnemonic)
+            .Case("mov", "movs")
+            .Case("and", "ands")
+            .Case("eor", "eors")
+            .Case("orr", "orrs")
+            .Case("bic", "bics")
+            .Case("mvn", "mvns")
+            .Case("mul", "muls")
+            .Default("");
+    if (!RetryMnemonic.empty()) {
       SmallVector<NearMissInfo, 4> RetryNearMisses;
       MCInst RetryInst;
       bool RetryPendConditionalInstruction = false;
-      unsigned RetryResult = retryWithMnemonic("movs", RetryInst,
+      unsigned RetryResult = retryWithMnemonic(RetryMnemonic, RetryInst,
                                                RetryPendConditionalInstruction,
                                                RetryNearMisses);
       if (RetryResult == Match_Success) {
@@ -11535,7 +11585,7 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
         NearMisses = std::move(RetryNearMisses);
         PendConditionalInstruction = RetryPendConditionalInstruction;
         MatchResult = RetryResult;
-        Operands[0] = ARMOperand::CreateToken("movs", IDLoc, *this);
+        Operands[0] = ARMOperand::CreateToken(RetryMnemonic, IDLoc, *this);
       }
     }
   }
