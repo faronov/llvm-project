@@ -147,6 +147,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
           cmake -S llvm -B $buildDir -G Ninja `
             "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" `
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
@@ -375,6 +376,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $buildDir, $installDir | Out-Null
           cmake -S llvm -B $buildDir -G Ninja `
             "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" `
             "-DCMAKE_INSTALL_PREFIX=$installDir" `
             "-DLLVM_ENABLE_PROJECTS=$env:LLVM_ENABLE_PROJECTS" `
             "-DLLVM_TARGETS_TO_BUILD=$env:LLVM_TARGETS_TO_BUILD" `
