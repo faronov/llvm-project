@@ -7335,8 +7335,8 @@ bool ARMAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
       return true;
     if (parseToken(AsmToken::Comma, "unexpected token in argument list"))
       return true;
-    if (Parser.getTok().isNot(AsmToken::LBrac) &&
-        Parser.getTok().isNot(AsmToken::Equal)) {
+    if (Parser.getTok().is(AsmToken::Equal)) {
+      Parser.Lex(); // Eat '='.
       SMLoc S = Parser.getTok().getLoc();
       const MCExpr *SubExprVal;
       if (getParser().parseExpression(SubExprVal))
