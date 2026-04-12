@@ -49,6 +49,8 @@ Thumb1FrameLowering::Thumb1FrameLowering(const ARMSubtarget &sti)
 
 bool Thumb1FrameLowering::hasReservedCallFrame(const MachineFunction &MF) const{
   const MachineFrameInfo &MFI = MF.getFrameInfo();
+  if (MF.getSubtarget<ARMSubtarget>().getTargetTriple().isTC32())
+    return false;
   unsigned CFSize = MFI.getMaxCallFrameSize();
   // It's not always a good idea to include the call frame as part of the
   // stack frame. ARM (especially Thumb) has small immediate offset to

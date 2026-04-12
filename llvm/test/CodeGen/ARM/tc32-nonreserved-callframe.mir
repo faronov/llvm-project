@@ -1,0 +1,52 @@
+# RUN: llc -run-pass=prologepilog %s -o - | FileCheck %s
+
+# TC32 must not reserve the outgoing call frame in the function prologue.
+# Keep call-frame growth local to call sites so early startup functions do not
+# enter with a needlessly inflated stack frame.
+
+--- |
+  target datalayout = "e-m:e-p:32:32-i64:64-a:0:32-n32-S64"
+  target triple = "tc32-unknown-none-elf"
+
+  declare void @bar(i32, i32, i32, i32, i32, i32)
+
+  define void @foo(i32 %n) {
+    ret void
+  }
+...
+---
+name:            foo
+alignment:       4
+tracksRegLiveness: true
+liveins:
+  - { reg: '$r0', virtual-reg: '' }
+frameInfo:
+  adjustsStack:    true
+  hasCalls:        true
+  maxCallFrameSize: 16
+stack:
+  - { id: 0, name: '', type: spill-slot, offset: 0, alignment: 4, size: 4 }
+body:             |
+  bb.0:
+    liveins: $r0
+
+    ; CHECK-LABEL: name:            foo
+    ; CHECK: frame-setup tPUSH
+    ; CHECK: $sp = frame-setup tSUBspi $sp, 2
+    ; CHECK: tSTRi killed $r0, $r6, 1
+    ; CHECK: $sp = tSUBspi $sp, 4
+    ; CHECK: tBL 14
+    ; CHECK: $sp = tADDspi $sp, 4
+    ; CHECK: $sp = frame-destroy tADDspi $sp, 2
+    tSTRspi killed $r0, %stack.0, 0, 14, $noreg :: (store (s32) into %stack.0)
+    ADJCALLSTACKDOWN 16, 0, 14, $noreg, implicit-def dead $sp, implicit $sp
+    renamable $r0 = tLDRspi %stack.0, 0, 14, $noreg :: (load (s32) from %stack.0)
+    renamable $r1 = MOVi 1, 14, $noreg, $noreg
+    renamable $r2 = MOVi 2, 14, $noreg, $noreg
+    renamable $r3 = MOVi 3, 14, $noreg, $noreg
+    renamable $r4 = MOVi 4, 14, $noreg, $noreg
+    renamable $r5 = MOVi 5, 14, $noreg, $noreg
+    tBL 14, $noreg, @bar, csr_aapcs, implicit-def dead $lr, implicit $sp, implicit killed $r0, implicit killed $r1, implicit killed $r2, implicit killed $r3, implicit killed $r4, implicit killed $r5, implicit-def $sp
+    ADJCALLSTACKUP 16, 0, 14, $noreg, implicit-def dead $sp, implicit $sp
+    tBX_RET 14, $noreg
+...
