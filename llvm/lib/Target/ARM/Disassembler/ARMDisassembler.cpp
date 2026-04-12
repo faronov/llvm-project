@@ -6788,8 +6788,8 @@ DecodeStatus ARMDisassembler::getThumbInstruction(MCInst &MI, uint64_t &Size,
       addTC32PredicateOperands(MI);
 
       uint32_t EncImm = (Hi11 << 11) | (Insn32 & 0x07FFu);
-      int32_t Imm = (SignExtend32<22>(EncImm) << 1) + 4;
-      if (!::tryAddingSymbolicOperand(Address, Address + Imm - 4, true, 4, MI,
+      int32_t Imm = SignExtend32<22>(EncImm) << 1;
+      if (!::tryAddingSymbolicOperand(Address, Address + Imm + 4, true, 4, MI,
                                       this))
         MI.addOperand(MCOperand::createImm(Imm));
       Size = 4;
