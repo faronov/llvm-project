@@ -486,6 +486,19 @@ DecodeStatus ARMDisassembler::decodeTC32Instruction(MCInst &MI, uint16_t Insn16,
     return MCDisassembler::Success;
   }
 
+  // TC32 reuses the Thumb literal-pool load encoding here (`ldr rN, [pc,#imm]`).
+  // Decode it before the generic TC32 shift/logical table, otherwise byte
+  // patterns like 0x0800 alias as `tshftr r0, r0, #0x20`.
+  if ((Insn16 & 0xF800u) == 0x0800u) {
+    MI.setOpcode(ARM::tLDRpci);
+    addTC32LowReg(MI, (Insn16 >> 8) & 0x7);
+    unsigned Imm = (Insn16 & 0xFFu) << 2;
+    MI.addOperand(MCOperand::createImm(Imm));
+    addTC32PredicateOperands(MI);
+    this->tryAddingPcLoadReferenceComment((Address & ~2u) + Imm + 4, Address);
+    return MCDisassembler::Success;
+  }
+
   if ((Insn16 & 0xFFC0u) == 0x0000u || (Insn16 & 0xFFC0u) == 0x0040u ||
       (Insn16 & 0xFFC0u) == 0x0080u || (Insn16 & 0xFFC0u) == 0x00C0u ||
       (Insn16 & 0xFFC0u) == 0x0100u || (Insn16 & 0xFFC0u) == 0x0140u ||
