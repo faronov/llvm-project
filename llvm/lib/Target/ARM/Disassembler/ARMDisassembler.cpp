@@ -219,7 +219,7 @@ DecodeStatus ARMDisassembler::decodeTC32Instruction(MCInst &MI, uint16_t Insn16,
     return MCDisassembler::Fail;
 
   auto addJumpTarget = [&](unsigned Enc, unsigned Bits) {
-    int32_t Imm = SignExtend32(Bits + 1, Enc << 1);
+    int32_t Imm = SignExtend32(Enc << 1, Bits + 1);
     if (!::tryAddingSymbolicOperand(Address, Address + Imm + 4, true, 2, MI,
                                     this))
       MI.addOperand(MCOperand::createImm(Imm));
