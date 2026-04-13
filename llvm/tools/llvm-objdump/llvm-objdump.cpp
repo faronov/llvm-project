@@ -2339,6 +2339,7 @@ disassembleObject(ObjectFile &Obj, const ObjectFile &DbgObj,
 
       while (Index < End) {
         uint64_t RelOffset;
+        std::optional<uint64_t> TC32RelocBranchTarget;
 
         // ARM and AArch64 ELF binaries can interleave data and text in the
         // same section. We rely on the markers introduced to understand what
@@ -2451,17 +2452,56 @@ disassembleObject(ObjectFile &Obj, const ObjectFile &DbgObj,
                 ThisBytes.size(),
                 DT->DisAsm->suggestBytesToSkip(ThisBytes, ThisAddr));
 
+          // For TC32 branch relocations in relocatable objects, the encoded
+          // immediate may be a placeholder while the relocation carries the
+          // real symbolic target. Use the relocation's symbol address as the
+          // branch destination annotation.
+          if (Disassembled && Obj.isRelocatableObject() && Obj.isELF() &&
+              isTC32Elf(Obj)) {
+            auto It = RelCur;
+            while (It != RelEnd) {
+              uint64_t Off = It->getOffset() - RelAdjustment;
+              if (Off >= Index + Size)
+                break;
+              if (getHidden(*It) || SectionAddr + Off < StartAddress) {
+                ++It;
+                continue;
+              }
+              if (Off >= Index) {
+                uint64_t Type = It->getType();
+                if (Type == ELF::R_ARM_THM_JUMP11 ||
+                    Type == ELF::R_ARM_THM_JUMP8) {
+                  symbol_iterator SI = It->getSymbol();
+                  if (SI != Obj.symbol_end()) {
+                    if (Expected<uint64_t> AddrOrErr = SI->getAddress())
+                      TC32RelocBranchTarget = *AddrOrErr;
+                    else
+                      consumeError(AddrOrErr.takeError());
+                  }
+                }
+                break;
+              }
+              ++It;
+            }
+          }
+
           LEP.update({ThisAddr, Section.getIndex()},
                      {ThisAddr + Size, Section.getIndex()},
                      Index + Size != End);
 
           DT->InstPrinter->setCommentStream(CommentStream);
 
+          if (TC32RelocBranchTarget)
+            DT->InstPrinter->setPrintBranchImmAsAddress(false);
+
           DT->Printer->printInst(
               *DT->InstPrinter, Disassembled ? &Inst : nullptr,
               Bytes.slice(Index, Size),
               {SectionAddr + Index + VMAAdjustment, Section.getIndex()}, FOS,
               "", *DT->SubtargetInfo, &SP, Obj.getFileName(), &Rels, LEP);
+
+          if (TC32RelocBranchTarget)
+            DT->InstPrinter->setPrintBranchImmAsAddress(true);
 
           DT->InstPrinter->setCommentStream(llvm::nulls());
 
@@ -2476,6 +2516,11 @@ disassembleObject(ObjectFile &Obj, const ObjectFile &DbgObj,
             uint64_t Target;
             bool PrintTarget = DT->InstrAnalysis->evaluateBranch(
                 Inst, SectionAddr + Index, Size, Target);
+
+            if (TC32RelocBranchTarget) {
+              Target = *TC32RelocBranchTarget;
+              PrintTarget = true;
+            }
 
             if (!PrintTarget) {
               if (std::optional<uint64_t> MaybeTarget =
