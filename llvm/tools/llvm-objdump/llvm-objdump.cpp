@@ -2485,23 +2485,24 @@ disassembleObject(ObjectFile &Obj, const ObjectFile &DbgObj,
             }
           }
 
+          if (Disassembled && TC32RelocBranchTarget && Inst.getNumOperands() > 0
+              && Inst.getOperand(0).isImm()) {
+            int64_t NewImm = static_cast<int64_t>(*TC32RelocBranchTarget) -
+                             static_cast<int64_t>(SectionAddr + Index) - 4;
+            Inst.getOperand(0) = MCOperand::createImm(NewImm);
+          }
+
           LEP.update({ThisAddr, Section.getIndex()},
                      {ThisAddr + Size, Section.getIndex()},
                      Index + Size != End);
 
           DT->InstPrinter->setCommentStream(CommentStream);
 
-          if (TC32RelocBranchTarget)
-            DT->InstPrinter->setPrintBranchImmAsAddress(false);
-
           DT->Printer->printInst(
               *DT->InstPrinter, Disassembled ? &Inst : nullptr,
               Bytes.slice(Index, Size),
               {SectionAddr + Index + VMAAdjustment, Section.getIndex()}, FOS,
               "", *DT->SubtargetInfo, &SP, Obj.getFileName(), &Rels, LEP);
-
-          if (TC32RelocBranchTarget)
-            DT->InstPrinter->setPrintBranchImmAsAddress(true);
 
           DT->InstPrinter->setCommentStream(llvm::nulls());
 
