@@ -630,6 +630,17 @@ static bool isTC32Elf(const ObjectFile &Obj) {
   return Elf && Elf->getEMachine() == ELF::EM_TC32;
 }
 
+static StringRef getTC32RelocTypeName(uint64_t Type) {
+  switch (Type) {
+  case 0x02:
+    return "R_TC32_ABS32";
+  case 0x66:
+    return "R_TC32_JUMP11";
+  default:
+    return {};
+  }
+}
+
 static bool isCSKYElf(const ObjectFile &Obj) {
   const auto *Elf = dyn_cast<ELFObjectFileBase>(&Obj);
   return Elf && Elf->getEMachine() == ELF::EM_CSKY;
@@ -653,6 +664,13 @@ static StringRef getRelocTypeName(const RelocationRef &Rel,
                                   uint64_t &CurrentRISCVVendorOffset) {
   Rel.getTypeName(RelocName);
   const ObjectFile *Obj = Rel.getObject();
+  if (isTC32Elf(*Obj)) {
+    if (StringRef TC32Name = getTC32RelocTypeName(Rel.getType());
+        !TC32Name.empty())
+      return TC32Name;
+    return StringRef(RelocName.data(), RelocName.size());
+  }
+
   if (!isRISCVElf(*Obj))
     return StringRef(RelocName.data(), RelocName.size());
 
