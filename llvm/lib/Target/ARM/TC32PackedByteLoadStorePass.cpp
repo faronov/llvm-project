@@ -25,9 +25,8 @@ using namespace llvm;
 
 namespace {
 
-static Value *createPackedByteLoad(LoadInst &LI, uint64_t ByteOffset,
-                                   Instruction &InsertBefore) {
-  IRBuilder<> B(&InsertBefore);
+static Value *createPackedByteLoad(LoadInst &LI, uint64_t ByteOffset) {
+  IRBuilder<> B(&LI);
   Type *I8Ty = B.getInt8Ty();
   Value *BasePtr = LI.getPointerOperand();
   Value *BytePtr = BasePtr;
@@ -84,8 +83,8 @@ bool llvm::runTC32PackedByteLoadStore(Function &F) {
       continue;
 
     unsigned BitWidth = cast<IntegerType>(LI->getType())->getBitWidth();
-    SmallVector<Instruction *, 8> ToErase;
-    SmallVector<std::pair<Instruction *, Value *>, 8> Replacements;
+    SmallVector<Instruction *, 8> Shifts;
+    SmallVector<std::pair<TruncInst *, uint64_t>, 8> Replacements;
     bool Valid = true;
 
     for (User *U : LI->users()) {
@@ -100,9 +99,7 @@ bool llvm::runTC32PackedByteLoadStore(Function &F) {
           Valid = false;
           break;
         }
-        Value *Byte = createPackedByteLoad(*LI, 0, *Tr);
-        Replacements.push_back({Tr, Byte});
-        ToErase.push_back(Tr);
+        Replacements.push_back({Tr, 0});
         continue;
       }
 
@@ -129,26 +126,28 @@ bool llvm::runTC32PackedByteLoadStore(Function &F) {
         break;
       }
 
-      Value *Byte = createPackedByteLoad(*LI, Shift / 8, *Tr);
-      Replacements.push_back({Tr, Byte});
-      ToErase.push_back(Tr);
-      ToErase.push_back(Inst);
+      Replacements.push_back({Tr, Shift / 8});
+      Shifts.push_back(Inst);
     }
 
     if (!Valid)
       continue;
 
-    for (auto &[OldInst, NewVal] : Replacements)
-      OldInst->replaceAllUsesWith(NewVal);
-
-    for (Instruction *I : reverse(ToErase))
-      if (I->use_empty())
-        I->eraseFromParent();
-
-    if (LI->use_empty()) {
-      LI->eraseFromParent();
-      Changed = true;
+    // Validate every use before changing IR, and preserve the original memory
+    // snapshot even when a consumer follows an aliasing write or call.
+    Value *Bytes[4] = {};
+    for (auto &[Tr, ByteOffset] : Replacements) {
+      if (!Bytes[ByteOffset])
+        Bytes[ByteOffset] = createPackedByteLoad(*LI, ByteOffset);
+      Tr->replaceAllUsesWith(Bytes[ByteOffset]);
+      Tr->eraseFromParent();
     }
+
+    for (Instruction *I : Shifts)
+      I->eraseFromParent();
+
+    LI->eraseFromParent();
+    Changed = true;
   }
 
   return Changed;
