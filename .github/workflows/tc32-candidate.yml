@@ -1,0 +1,293 @@
+name: TC32 experimental compiler qualification
+
+on:
+  push:
+    branches: [fix/tc32-packed-load-order]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tc32-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLVM_BASELINE_SHA: f4856fe098689ceef0543528070c3b4ebc24752a
+  RUST_SHA: 93bec5a7d73008911becec7fc9fbe2a631004408
+  HOST_TRIPLE: x86_64-unknown-linux-gnu
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  llvm:
+    if: github.repository == 'faronov/llvm-project' && github.ref == 'refs/heads/fix/tc32-packed-load-order'
+    name: LLVM ${{ matrix.variant }} / Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: baseline
+            source: f4856fe098689ceef0543528070c3b4ebc24752a
+          - variant: candidate
+            source: ${{ github.sha }}
+    env:
+      VARIANT: ${{ matrix.variant }}
+      LLVM_SOURCE_SHA: ${{ matrix.source }}
+    steps:
+      - name: Checkout exact compiler source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ matrix.source }}
+          path: llvm-source
+          persist-credentials: false
+          sparse-checkout: |
+            cmake
+            llvm
+            clang
+            lld
+            third-party
+
+      # The baseline does not contain this workflow or the new regression.
+      - name: Checkout experiment driver and candidate regression
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: experiment
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            llvm/test/CodeGen/ARM
+
+      - name: Capture source and host provenance
+        run: |
+          mkdir -p evidence llvm-artifact
+          test "$(git -C llvm-source rev-parse HEAD)" = "$LLVM_SOURCE_SHA"
+          test "$(git -C experiment rev-parse HEAD)" = "$GITHUB_SHA"
+          {
+            echo "variant=$VARIANT"
+            echo "llvm_source_sha=$LLVM_SOURCE_SHA"
+            echo "llvm_baseline_sha=$LLVM_BASELINE_SHA"
+            echo "rust_source_sha=$RUST_SHA"
+            echo "workflow_source_sha=$GITHUB_SHA"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "runner_image=${ImageOS:-unknown}/${ImageVersion:-unknown}"
+            echo "host=$HOST_TRIPLE"
+            echo "llvm_compile_jobs=2"
+            echo "llvm_link_jobs=1"
+          } | tee evidence/provenance.txt
+          {
+            uname -a
+            cmake --version
+            ninja --version
+            clang --version
+            clang++ --version
+            ld.lld --version
+            python3 --version
+            df -h .
+          } | tee evidence/host-tools.txt
+
+      # One rust-llvm-capable install, not separate CLI/full/LLDB builds.
+      # Static libraries also keep the standalone package independent of this prefix.
+      - name: Configure identical Rust-compatible LLVM builds
+        run: |
+          cmake -S llvm-source/llvm -B llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/llvm-install" \
+            -DLLVM_USE_LINKER=lld \
+            -DLLVM_ENABLE_PROJECTS='clang;lld' \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=tc32-unknown-none-elf \
+            -DLLVM_TARGETS_TO_BUILD='X86;AArch64;ARM' \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF \
+            -DLLVM_PARALLEL_COMPILE_JOBS=2 \
+            -DLLVM_PARALLEL_LINK_JOBS=1 \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_INCLUDE_TESTS=ON \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_BUILD_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_BUILD_DOCS=OFF \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            -DLLD_INCLUDE_TESTS=OFF \
+            2>&1 | tee evidence/configure.log
+          cp llvm-build/CMakeCache.txt evidence/
+
+      - name: Build libraries, headers, tools and lit utilities
+        run: |
+          cmake --build llvm-build --parallel 2 \
+            --target all FileCheck not count split-file \
+            2>&1 | tee evidence/build.log
+
+      - name: Run focused LLVM qualification
+        timeout-minutes: 15
+        run: |
+          bash experiment/.github/scripts/tc32-test-llvm.sh \
+            "$VARIANT" "$GITHUB_WORKSPACE/llvm-source" \
+            "$GITHUB_WORKSPACE/llvm-build" \
+            "$GITHUB_WORKSPACE/experiment" "$GITHUB_WORKSPACE/evidence"
+
+      - name: Install and verify rust-llvm flavor
+        run: |
+          cmake --install llvm-build --strip
+          install -m 755 llvm-build/bin/FileCheck llvm-install/bin/FileCheck
+          LLVM_BIN="$GITHUB_WORKSPACE/llvm-install/bin"
+          test -f llvm-install/include/llvm/IR/Module.h
+          test -f llvm-install/include/llvm/Config/llvm-config.h
+          for lib in LLVMSupport LLVMCore LLVMMCA LLVMX86TargetMCA; do
+            test -f "llvm-install/lib/lib$lib.a"
+          done
+          "$LLVM_BIN/llvm-config" --link-static --libfiles \
+            aarch64 arm asmparser bitreader bitwriter coverage instrumentation ipo linker lto x86 \
+            | tee evidence/rust-llvm-libfiles.txt
+          while read -r library; do
+            test -f "$library"
+          done < <(tr ' ' '\n' < evidence/rust-llvm-libfiles.txt)
+          {
+            "$LLVM_BIN/llvm-config" --version --components --system-libs
+            for tool in clang ld.lld opt llc FileCheck llvm-extract llvm-objdump llvm-objcopy llvm-ar; do
+              "$LLVM_BIN/$tool" --version
+            done
+          } | tee evidence/compiler-versions.txt
+          cp evidence/provenance.txt llvm-install/TC32-EXPERIMENT.txt
+          archive="tc32-experimental-llvm-rust-llvm-$VARIANT-linux-amd64.tar.gz"
+          tar -C llvm-install -czf "llvm-artifact/$archive" .
+          (cd llvm-artifact && sha256sum "$archive" > SHA256SUMS)
+          cp llvm-artifact/SHA256SUMS evidence/llvm-SHA256SUMS
+
+      - name: Retain experimental LLVM package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tc32-experimental-llvm-rust-llvm-${{ matrix.variant }}-linux-amd64
+          path: llvm-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Retain compiler evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tc32-experimental-llvm-evidence-${{ matrix.variant }}-linux-amd64
+          path: evidence/
+          retention-days: 14
+
+  rust:
+    # A failing baseline control or candidate regression blocks the expensive build.
+    # Rebuilding baseline Rust adds no coverage for this LLVM IR ordering defect.
+    needs: llvm
+    name: Pinned Rust stage2 / candidate LLVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout experiment driver
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: experiment
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Checkout pinned Rust source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: modern-tc32/rust
+          ref: ${{ env.RUST_SHA }}
+          path: rust
+          persist-credentials: false
+
+      - name: Download this run's exact candidate LLVM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tc32-experimental-llvm-rust-llvm-candidate-linux-amd64
+          path: llvm-artifact
+
+      - name: Verify and unpack candidate LLVM
+        run: |
+          (cd llvm-artifact && sha256sum -c SHA256SUMS)
+          mkdir -p llvm-toolchain rust-evidence
+          tar -xzf llvm-artifact/tc32-experimental-llvm-rust-llvm-candidate-linux-amd64.tar.gz \
+            -C llvm-toolchain
+          grep -Fx "llvm_source_sha=$GITHUB_SHA" llvm-toolchain/TC32-EXPERIMENT.txt
+          cp llvm-toolchain/TC32-EXPERIMENT.txt rust-evidence/llvm-provenance.txt
+          cp llvm-artifact/SHA256SUMS rust-evidence/llvm-SHA256SUMS
+          # Only our downloaded archive is removed; installed runner tools are untouched.
+          rm llvm-artifact/tc32-experimental-llvm-rust-llvm-candidate-linux-amd64.tar.gz
+
+      - name: Build and package experimental stage2
+        run: bash experiment/.github/scripts/tc32-build-rust.sh
+
+      - name: Retain experimental standalone TC32 Rust toolchain
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tc32-experimental-rust-toolchain-linux-amd64
+          path: rust-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Retain Rust evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tc32-experimental-rust-evidence-linux-amd64
+          path: rust-evidence/
+          retention-days: 14
+
+  standalone:
+    needs: rust
+    name: Relocated package smoke and LLVM comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout experiment driver
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: experiment
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download standalone package from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tc32-experimental-rust-toolchain-linux-amd64
+          path: rust-artifact
+
+      - name: Download both compiler evidence sets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tc32-experimental-llvm-evidence-*-linux-amd64
+          path: llvm-evidence
+
+      - name: Verify standalone host and TC32 compilation without build trees
+        run: bash experiment/.github/scripts/tc32-verify-standalone.sh
+
+      - name: Retain qualification report even on failure
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tc32-experimental-qualification-linux-amd64
+          path: |
+            qualification/
+            !qualification/target/**
+            !qualification/cargo-home/**
+          retention-days: 14
