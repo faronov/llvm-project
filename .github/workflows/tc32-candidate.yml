@@ -64,6 +64,14 @@ jobs:
             .github/scripts
             llvm/test/CodeGen/ARM
 
+      - name: Ensure matching host linker is available
+        run: |
+          if [[ ! -x /usr/lib/llvm-18/bin/ld.lld ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install --yes --no-install-recommends lld-18
+          fi
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+
       - name: Capture source and host provenance
         run: |
           mkdir -p evidence llvm-artifact
