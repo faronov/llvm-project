@@ -51,6 +51,7 @@ jobs:
             llvm
             clang
             lld
+            libunwind/include
             third-party
 
       # The baseline does not contain this workflow or the new regression.
@@ -77,6 +78,8 @@ jobs:
           mkdir -p evidence llvm-artifact
           test "$(git -C llvm-source rev-parse HEAD)" = "$LLVM_SOURCE_SHA"
           test "$(git -C experiment rev-parse HEAD)" = "$GITHUB_SHA"
+          # LLD's Mach-O backend needs this header even on Linux hosts.
+          test -f llvm-source/libunwind/include/mach-o/compact_unwind_encoding.h
           {
             echo "variant=$VARIANT"
             echo "llvm_source_sha=$LLVM_SOURCE_SHA"
