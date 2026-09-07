@@ -112,33 +112,34 @@ bool TC32ImmediateExpand::runOnMachineFunction(MachineFunction &MF) {
     for (auto I = MBB.begin(); I != MBB.end();) {
       MachineInstr &MI = *I++;
       unsigned ExpandedOpcode = getExpandedOpcode(MI.getOpcode());
+      if (!ExpandedOpcode)
+        continue;
+
       const DebugLoc &DL = MI.getDebugLoc();
       const MachineOperand &Pred = MI.getOperand(4);
       const MachineOperand &PredReg = MI.getOperand(5);
       Register Dst = MI.getOperand(0).getReg();
       bool CPSRDead = MI.getOperand(1).isDead();
 
-      if (ExpandedOpcode) {
-        Register TmpImm = MRI.createVirtualRegister(&ARM::tGPRRegClass);
-        const int64_t Imm = MI.getOperand(3).getImm();
+      Register TmpImm = MRI.createVirtualRegister(&ARM::tGPRRegClass);
+      const int64_t Imm = MI.getOperand(3).getImm();
 
-        // TC32 immediate add/sub forms do not carry across all 32 bits on
-        // hardware. Keep the assembler forms available, but do not emit them for
-        // compiler-generated i32 arithmetic.
-        BuildMI(MBB, MI, DL, TII->get(ARM::tMOVi8), TmpImm)
-            .addReg(ARM::CPSR, RegState::Define | RegState::Dead)
-            .addImm(Imm)
-            .add(Pred)
-            .add(PredReg);
-        BuildMI(MBB, MI, DL, TII->get(ExpandedOpcode), Dst)
-            .addReg(ARM::CPSR, RegState::Define | getDeadRegState(CPSRDead))
-            .add(MI.getOperand(2))
-            .addReg(TmpImm, RegState::Kill)
-            .add(Pred)
-            .add(PredReg);
-        MI.eraseFromParent();
-        Changed = true;
-      }
+      // TC32 immediate add/sub forms do not carry across all 32 bits on
+      // hardware. Keep the assembler forms available, but do not emit them for
+      // compiler-generated i32 arithmetic.
+      BuildMI(MBB, MI, DL, TII->get(ARM::tMOVi8), TmpImm)
+          .addReg(ARM::CPSR, RegState::Define | RegState::Dead)
+          .addImm(Imm)
+          .add(Pred)
+          .add(PredReg);
+      BuildMI(MBB, MI, DL, TII->get(ExpandedOpcode), Dst)
+          .addReg(ARM::CPSR, RegState::Define | getDeadRegState(CPSRDead))
+          .add(MI.getOperand(2))
+          .addReg(TmpImm, RegState::Kill)
+          .add(Pred)
+          .add(PredReg);
+      MI.eraseFromParent();
+      Changed = true;
     }
   }
 
