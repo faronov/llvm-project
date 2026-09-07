@@ -124,9 +124,16 @@ grep -Fx EXPECTED_BASELINE_SEMANTIC_FAILURE "$baseline/semantic-result.txt"
 grep -Fx CANDIDATE_SEMANTIC_PASS "$candidate/semantic-result.txt"
 grep -Fx EXPECTED_BASELINE_CONSTANT_FOLD_FAILURE "$baseline/constant-fold-result.txt"
 grep -Fx CANDIDATE_CONSTANT_FOLD_PASS "$candidate/constant-fold-result.txt"
+grep -Fx EXPECTED_BASELINE_IMMEDIATE_EXPAND_CRASH "$baseline/codegen-result.txt"
+grep -Fx CANDIDATE_CODEGEN_PASS "$candidate/codegen-result.txt"
+grep -Fx BASELINE_LIT_KNOWN_IMMEDIATE_EXPAND_FAILURES "$baseline/lit-result.txt"
+grep -Fx CANDIDATE_LIT_PASS "$candidate/lit-result.txt"
 cmp "$baseline/snapshot.input.ll" "$candidate/snapshot.input.ll"
 cmp "$baseline/snapshot-semantics.input.ll" "$candidate/snapshot-semantics.input.ll"
-for output in snapshot.opt.ll snapshot.s snapshot-semantics.opt.ll snapshot-semantics.folded.ll; do
+cmp "$baseline/immediate-expand.input.mir" "$candidate/immediate-expand.input.mir"
+cp "$baseline/lit-known-failures.txt" qualification/baseline-known-codegen-crashes.txt
+cp "$candidate/snapshot.s" qualification/snapshot.candidate.s
+for output in snapshot.opt.ll snapshot-semantics.opt.ll snapshot-semantics.folded.ll; do
   status=0
   diff -u "$baseline/$output" "$candidate/$output" \
     > "qualification/$output.diff" || status=$?
@@ -136,7 +143,9 @@ cat > qualification/result.txt <<EOF
 PASS: pinned baseline fails both new snapshot regressions as expected; candidate passes.
 PASS: untouched IR folds to success; TC32-transformed IR folds to baseline failure/candidate success.
 PASS: baseline/candidate TC32-transformed IR semantic negative/positive controls on x86_64.
-PASS: existing TC32 and neighboring ARM lit coverage in both LLVM builds.
+PASS: candidate immediate-expansion regression, TC32 lowering and full selected lit coverage.
+BASELINE LIMITATION: assertions expose the pinned immediate-expansion bug; its exact crashes are recorded, not successful TC32 codegen.
+PASS: no other failures in baseline's selected lit coverage; ARM immediate-expansion control passes in both builds.
 PASS: relocated standalone package, native host execution, TC32 O0/Os compile and link (tail merging disabled).
 NOT QUALIFIED: real firmware, TC32 runtime/emulation, hardware or network behavior.
 No production toolchain was installed, replaced, registered or relinked.

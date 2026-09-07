@@ -38,10 +38,6 @@ else
   fi
   echo "CANDIDATE_PASS" > "$evidence/snapshot-result.txt"
 fi
-"$build_dir/bin/llc" -mtriple=tc32-unknown-none-elf -O0 \
-  -thread-model=single -verify-machineinstrs \
-  "$evidence/snapshot.opt.ll" -o "$evidence/snapshot.s"
-
 # The untouched program must fold to success in both compilers. Only the
 # baseline's TC32-transformed program may fold to the known failure result.
 semantics="$experiment_dir/llvm/test/CodeGen/ARM/tc32-packed-byte-load-snapshot-semantics.ll"
@@ -139,6 +135,49 @@ else
   exit 1
 fi
 
+# Keep the baseline pristine and assertions enabled. Its separate immediate
+# expansion bug is a crash control, never evidence of the snapshot wrong-code.
+expect_immediate_expand_crash() {
+  local name=$1
+  shift
+  local log="$evidence/$name.log"
+  if ! "$build_dir/bin/not" --crash "$@" > "$log" 2>&1; then
+    cat "$log"
+    echo "Expected the pinned baseline's immediate-expansion assertion: $name" >&2
+    return 1
+  fi
+  cat "$log"
+  grep -F 'Assertion `Index < this->size() && "Invalid index!"' "$log"
+  grep -F "Running pass 'TC32 immediate ALU expand'" "$log"
+}
+
+immediate="$experiment_dir/llvm/test/CodeGen/ARM/tc32-immediate-expand.mir"
+test -s "$immediate"
+cp "$immediate" "$evidence/immediate-expand.input.mir"
+if [[ $variant == baseline ]]; then
+  expect_immediate_expand_crash immediate-expand \
+    "$build_dir/bin/llc" -mtriple=tc32-unknown-none-elf \
+    -run-pass=tc32-immediate-expand -verify-machineinstrs "$immediate" -o /dev/null
+  expect_immediate_expand_crash snapshot-codegen \
+    "$build_dir/bin/llc" -mtriple=tc32-unknown-none-elf -O0 \
+    -thread-model=single -verify-machineinstrs "$evidence/snapshot.opt.ll" -o /dev/null
+  echo "EXPECTED_BASELINE_IMMEDIATE_EXPAND_CRASH" > "$evidence/codegen-result.txt"
+else
+  "$build_dir/bin/llc" -mtriple=tc32-unknown-none-elf \
+    -run-pass=tc32-immediate-expand -verify-machineinstrs "$immediate" \
+    -o "$evidence/immediate-expand.mir"
+  "$build_dir/bin/FileCheck" "$immediate" < "$evidence/immediate-expand.mir"
+  "$build_dir/bin/llc" -mtriple=tc32-unknown-none-elf -O0 \
+    -thread-model=single -verify-machineinstrs \
+    "$evidence/snapshot.opt.ll" -o "$evidence/snapshot.s"
+  echo "CANDIDATE_CODEGEN_PASS" > "$evidence/codegen-result.txt"
+fi
+"$build_dir/bin/llc" -mtriple=thumbv6m-unknown-none-eabi \
+  -run-pass=tc32-immediate-expand -verify-machineinstrs "$immediate" \
+  -o "$evidence/immediate-expand.arm.mir"
+"$build_dir/bin/FileCheck" "$immediate" --check-prefix=ARM \
+  < "$evidence/immediate-expand.arm.mir"
+
 # Each revision runs its own tests; only the controls above import regressions,
 # from the same run's exact candidate checkout rather than an external URL.
 tests=("$arm_tests"/tc32-*.ll "$arm_tests"/tc32-*.mir)
@@ -158,6 +197,50 @@ for test_file in "${tests[@]}"; do
   test -f "$test_file"
 done
 printf '%s\n' "${tests[@]}" > "$evidence/lit-selection.txt"
+lit_status=0
 python3 "$build_dir/bin/llvm-lit" -v -j 2 \
   --xunit-xml-output="$evidence/lit.xml" \
-  -o "$evidence/lit.json" "${tests[@]}" 2>&1 | tee "$evidence/lit.log"
+  -o "$evidence/lit.json" "${tests[@]}" > "$evidence/lit.log" 2>&1 || lit_status=$?
+cat "$evidence/lit.log"
+python3 - "$variant" "$lit_status" "$evidence" "${#tests[@]}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+variant, status, directory, count = sys.argv[1:]
+status = int(status)
+evidence = Path(directory)
+if status not in (0, 1):
+    sys.exit(f"llvm-lit failed to execute normally: {status}")
+tests = json.loads((evidence / "lit.json").read_text())["tests"]
+if len(tests) != int(count) or not any(t["code"] == "PASS" for t in tests):
+    sys.exit("Incomplete or empty lit coverage")
+known = []
+for test in tests:
+    if test["code"] in ("PASS", "XFAIL", "UNSUPPORTED"):
+        continue
+    output = test["output"]
+    if (
+        variant == "baseline"
+        and test["code"] == "FAIL"
+        and "CodeGen/ARM/tc32-" in test["name"]
+        and 'Assertion `Index < this->size() && "Invalid index!"' in output
+        and "Running pass 'TC32 immediate ALU expand'" in output
+    ):
+        known.append(test["name"])
+    else:
+        sys.exit(f"Unexpected lit result: {test['code']} {test['name']}")
+if status != int(bool(known)):
+    sys.exit(f"lit exit {status} disagrees with recorded results")
+if variant == "baseline":
+    if not known:
+        sys.exit("Pinned baseline did not reproduce its known codegen failure")
+    marker = "BASELINE_LIT_KNOWN_IMMEDIATE_EXPAND_FAILURES"
+    (evidence / "lit-known-failures.txt").write_text("\n".join(known) + "\n")
+else:
+    marker = "CANDIDATE_LIT_PASS"
+(evidence / "lit-result.txt").write_text(marker + "\n")
+print(marker)
+for name in known:
+    print(f"KNOWN BASELINE CRASH: {name}")
+PY
