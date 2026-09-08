@@ -202,45 +202,27 @@ python3 "$build_dir/bin/llvm-lit" -v -j 2 \
   --xunit-xml-output="$evidence/lit.xml" \
   -o "$evidence/lit.json" "${tests[@]}" > "$evidence/lit.log" 2>&1 || lit_status=$?
 cat "$evidence/lit.log"
-python3 - "$variant" "$lit_status" "$evidence" "${#tests[@]}" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-variant, status, directory, count = sys.argv[1:]
-status = int(status)
-evidence = Path(directory)
-if status not in (0, 1):
-    sys.exit(f"llvm-lit failed to execute normally: {status}")
-tests = json.loads((evidence / "lit.json").read_text())["tests"]
-if len(tests) != int(count) or not any(t["code"] == "PASS" for t in tests):
-    sys.exit("Incomplete or empty lit coverage")
-known = []
-for test in tests:
-    if test["code"] in ("PASS", "XFAIL", "UNSUPPORTED"):
-        continue
-    output = test["output"]
-    if (
-        variant == "baseline"
-        and test["code"] == "FAIL"
-        and "CodeGen/ARM/tc32-" in test["name"]
-        and 'Assertion `Index < this->size() && "Invalid index!"' in output
-        and "Running pass 'TC32 immediate ALU expand'" in output
-    ):
-        known.append(test["name"])
-    else:
-        sys.exit(f"Unexpected lit result: {test['code']} {test['name']}")
-if status != int(bool(known)):
-    sys.exit(f"lit exit {status} disagrees with recorded results")
-if variant == "baseline":
-    if not known:
-        sys.exit("Pinned baseline did not reproduce its known codegen failure")
-    marker = "BASELINE_LIT_KNOWN_IMMEDIATE_EXPAND_FAILURES"
-    (evidence / "lit-known-failures.txt").write_text("\n".join(known) + "\n")
-else:
-    marker = "CANDIDATE_LIT_PASS"
-(evidence / "lit-result.txt").write_text(marker + "\n")
-print(marker)
-for name in known:
-    print(f"KNOWN BASELINE CRASH: {name}")
-PY
+printf '%s\n' "$lit_status" > "$evidence/lit-exit-status.txt"
+if [[ $variant == baseline ]]; then
+  # These tests pipe their expected diagnostic into FileCheck, hiding stderr
+  # from lit.json. Capture the SAME llc command, without that consuming pipe;
+  # not --crash must confirm a crash, not an ordinary diagnostic exit.
+  for diagnostic in tc32-atomic-error.ll tc32-ldrex-error.ll; do
+    control="$evidence/$diagnostic.control"
+    command=("$build_dir/bin/not" --crash "$build_dir/bin/llc"
+      -mtriple=tc32-unknown-none-elf "$arm_tests/$diagnostic" -o /dev/null)
+    printf '%s\n' "${command[@]}" > "$control.command"
+    control_status=0
+    "${command[@]}" > "$control.stdout" 2> "$control.stderr" || control_status=$?
+    printf '%s\n' "$control_status" > "$control.not-status"
+    cat "$control.stderr"
+    diagnostic_status=0
+    "$build_dir/bin/FileCheck" "$arm_tests/$diagnostic" \
+      < "$control.stderr" > "$control.filecheck.log" 2>&1 || diagnostic_status=$?
+    printf '%s\n' "$diagnostic_status" > "$control.filecheck-status"
+  done
+fi
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  "$experiment_dir/.github/scripts/tc32-classify-lit-test.py"
+python3 "$experiment_dir/.github/scripts/tc32-classify-lit.py" \
+  "$variant" "$lit_status" "$evidence"
