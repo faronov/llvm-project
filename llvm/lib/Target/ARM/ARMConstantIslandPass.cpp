@@ -2284,7 +2284,12 @@ void ARMConstantIslands::removeDeadCPEMI(MachineInstr *CPEMI) {
     CPEBB->setAlignment(getCPEAlign(&*CPEBB->begin()));
   }
 
-  BBUtils->adjustBBOffsetsAfter(CPEBB);
+  // Realignment changes the island's own offset and known bits, not just its
+  // successors. Start at its predecessor so removed padding is propagated.
+  auto CPEBBI = CPEBB->getIterator();
+  BBUtils->adjustBBOffsetsAfter(CPEBBI == MF->begin()
+                                   ? CPEBB
+                                   : &*std::prev(CPEBBI));
   // An island has only one predecessor BB and one successor BB. Check if
   // this BB's predecessor jumps directly to this BB's successor. This
   // shouldn't happen currently.
