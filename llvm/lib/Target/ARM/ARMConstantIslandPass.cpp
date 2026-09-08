@@ -414,7 +414,7 @@ void ARMConstantIslands::verifyIncrementalFunctionState() {
   bool InlineJumpTables =
       MJTI && MJTI->getEntryKind() == MachineJumpTableInfo::EK_Inline;
 
-  std::vector<MachineBasicBlock *> ExpectedWaterList;
+  SmallPtrSet<MachineBasicBlock *, 32> SafeWater;
   std::vector<ImmBranch> ExpectedImmBranches;
   std::vector<CPUser> ExpectedCPUsers;
   SmallVector<MachineInstr *, 4> ExpectedT2JumpTables;
@@ -422,8 +422,8 @@ void ARMConstantIslands::verifyIncrementalFunctionState() {
   DenseMap<const MachineInstr *, unsigned> ExpectedRefCounts;
 
   for (MachineBasicBlock &MBB : *MF) {
-    if (!BBHasFallthrough(&MBB))
-      ExpectedWaterList.push_back(&MBB);
+    if (!MBB.getFallThrough(/*JumpToFallThrough=*/false))
+      SafeWater.insert(&MBB);
 
     for (MachineInstr &I : MBB) {
       if (I.isDebugInstr())
@@ -432,70 +432,18 @@ void ARMConstantIslands::verifyIncrementalFunctionState() {
       unsigned Opc = I.getOpcode();
       if (I.isBranch() ||
           (STI->getTargetTriple().isTC32() && Opc == ARM::tBL)) {
+        if ((Opc == ARM::t2BR_JT || Opc == ARM::tBR_JTr) && InlineJumpTables)
+          ExpectedT2JumpTables.push_back(&I);
+
+        unsigned MaxOffs = 0;
         bool IsCond = false;
         bool IsCall = false;
-        unsigned Bits = 0;
-        unsigned Scale = 1;
         unsigned DestOpnd = 0;
-        int UOpc = Opc;
-        switch (Opc) {
-        default:
-          break;
-        case ARM::t2BR_JT:
-        case ARM::tBR_JTr:
-          if (InlineJumpTables)
-            ExpectedT2JumpTables.push_back(&I);
-          break;
-        case ARM::Bcc:
-          IsCond = true;
-          UOpc = ARM::B;
-          [[fallthrough]];
-        case ARM::B:
-          Bits = 24;
-          Scale = 4;
-          break;
-        case ARM::tBcc:
-          IsCond = true;
-          UOpc = ARM::tB;
-          Bits = 8;
-          Scale = 2;
-          break;
-        case ARM::tTC32Bcc32:
-          IsCond = true;
-          UOpc = ARM::tTC32B32;
-          Bits = 19;
-          Scale = 2;
-          break;
-        case ARM::tB:
-          Bits = 11;
-          Scale = 2;
-          break;
-        case ARM::t2Bcc:
-          IsCond = true;
-          UOpc = ARM::t2B;
-          Bits = 20;
-          Scale = 2;
-          break;
-        case ARM::t2B:
-          Bits = 24;
-          Scale = 2;
-          break;
-        case ARM::tBL:
-          if (!STI->getTargetTriple().isTC32() || !I.getOperand(2).isMBB())
-            break;
-          IsCall = true;
-          DestOpnd = 2;
-          UOpc = ARM::tB;
-          Bits = 22;
-          Scale = 2;
-          break;
-        }
-
-        if (Bits != 0) {
-          unsigned MaxOffs = ((1 << (Bits - 1)) - 1) * Scale;
-          ExpectedImmBranches.emplace_back(&I, MaxOffs, IsCond, IsCall,
-                                           DestOpnd, UOpc);
-        }
+        unsigned UOpc = 0;
+        if (!classifyImmBranch(I, MaxOffs, IsCond, IsCall, DestOpnd, UOpc))
+          continue;
+        ExpectedImmBranches.emplace_back(&I, MaxOffs, IsCond, IsCall,
+                                         DestOpnd, UOpc);
       }
 
       if (Opc == ARM::CONSTPOOL_ENTRY || Opc == ARM::JUMPTABLE_ADDRS ||
@@ -591,7 +539,15 @@ void ARMConstantIslands::verifyIncrementalFunctionState() {
     }
   }
 
-  assert(ExpectedWaterList == WaterList && "WaterList drifted from CFG");
+  // Used water is deliberately removed to ensure convergence. Splits can also
+  // create water with an explicit branch to the layout successor.
+  int PreviousWater = -1;
+  for (MachineBasicBlock *MBB : WaterList) {
+    assert(SafeWater.contains(MBB) && "WaterList contains unsafe or stale water");
+    assert(MBB->getNumber() > PreviousWater &&
+           "WaterList is not sorted and unique");
+    PreviousWater = MBB->getNumber();
+  }
   assert(ExpectedT2JumpTables == T2JumpTables &&
          "T2JumpTables drifted from scanned state");
   assert(ExpectedJumpTableUserIndices == JumpTableUserIndices &&
@@ -599,10 +555,16 @@ void ARMConstantIslands::verifyIncrementalFunctionState() {
 
   assert(ExpectedImmBranches.size() == ImmBranches.size() &&
          "ImmBranches size drifted from scanned state");
-  for (unsigned I = 0, E = ImmBranches.size(); I != E; ++I) {
-    const ImmBranch &Expected = ExpectedImmBranches[I];
-    const ImmBranch &Actual = ImmBranches[I];
-    assert(Expected.MI == Actual.MI && "ImmBranches tracked wrong MI");
+  // Relaxation appends branches; their worklist order is not layout order.
+  DenseMap<const MachineInstr *, const ImmBranch *> ActualImmBranches;
+  for (const ImmBranch &Br : ImmBranches) {
+    bool Inserted = ActualImmBranches.try_emplace(Br.MI, &Br).second;
+    assert(Inserted && "ImmBranches tracked duplicate MI");
+  }
+  for (const ImmBranch &Expected : ExpectedImmBranches) {
+    auto It = ActualImmBranches.find(Expected.MI);
+    assert(It != ActualImmBranches.end() && "ImmBranches tracked wrong MI");
+    const ImmBranch &Actual = *It->second;
     assert(Expected.MaxDisp == Actual.MaxDisp &&
            "ImmBranches tracked wrong max displacement");
     assert(Expected.isCond == Actual.isCond &&
@@ -1317,67 +1279,18 @@ initializeFunctionInfo(const std::vector<MachineInstr*> &CPEMIs) {
       unsigned Opc = I.getOpcode();
       if (I.isBranch() ||
           (STI->getTargetTriple().isTC32() && I.getOpcode() == ARM::tBL)) {
+        if ((Opc == ARM::t2BR_JT || Opc == ARM::tBR_JTr) && InlineJumpTables)
+          T2JumpTables.push_back(&I);
+
+        unsigned MaxOffs = 0;
         bool isCond = false;
         bool IsCall = false;
-        unsigned Bits = 0;
-        unsigned Scale = 1;
         unsigned DestOpnd = 0;
-        int UOpc = Opc;
-        switch (Opc) {
-        default:
-          continue;  // Ignore other JT branches
-        case ARM::t2BR_JT:
-        case ARM::tBR_JTr:
-          if (InlineJumpTables)
-            T2JumpTables.push_back(&I);
-          continue;   // Does not get an entry in ImmBranches
-        case ARM::Bcc:
-          isCond = true;
-          UOpc = ARM::B;
-          [[fallthrough]];
-        case ARM::B:
-          Bits = 24;
-          Scale = 4;
-          break;
-        case ARM::tBcc:
-          isCond = true;
-          UOpc = ARM::tB;
-          Bits = 8;
-          Scale = 2;
-          break;
-        case ARM::tTC32Bcc32:
-          isCond = true;
-          UOpc = ARM::tTC32B32;
-          Bits = 19;
-          Scale = 2;
-          break;
-        case ARM::tB:
-          Bits = 11;
-          Scale = 2;
-          break;
-        case ARM::t2Bcc:
-          isCond = true;
-          UOpc = ARM::t2B;
-          Bits = 20;
-          Scale = 2;
-          break;
-        case ARM::t2B:
-          Bits = 24;
-          Scale = 2;
-          break;
-        case ARM::tBL:
-          if (!STI->getTargetTriple().isTC32() || !I.getOperand(2).isMBB())
-            continue;
-          IsCall = true;
-          DestOpnd = 2;
-          UOpc = ARM::tB;
-          Bits = 22;
-          Scale = 2;
-          break;
-        }
+        unsigned UOpc = 0;
+        if (!classifyImmBranch(I, MaxOffs, isCond, IsCall, DestOpnd, UOpc))
+          continue;
 
         // Record this immediate branch.
-        unsigned MaxOffs = ((1 << (Bits-1))-1) * Scale;
         addImmBranch(&I, MaxOffs, isCond, IsCall, DestOpnd, UOpc);
       }
 
@@ -2334,7 +2247,7 @@ bool ARMConstantIslands::handleConstantPoolUser(unsigned CPUserIndex,
   NewIsland->setAlignment(getCPEAlign(U.CPEMI));
 
   // Increase the size of the island block to account for the new entry.
-  BBUtils->adjustBBSize(NewIsland, Size);
+  BBUtils->adjustBBSize(NewIsland, TII->getInstSizeInBytes(*U.CPEMI));
   BBUtils->adjustBBOffsetsAfter(&*--NewIsland->getIterator());
 
   // Finally, change the CPI in the instruction operand to be ID.
@@ -2356,7 +2269,7 @@ bool ARMConstantIslands::handleConstantPoolUser(unsigned CPUserIndex,
 /// sizes and offsets of impacted basic blocks.
 void ARMConstantIslands::removeDeadCPEMI(MachineInstr *CPEMI) {
   MachineBasicBlock *CPEBB = CPEMI->getParent();
-  unsigned Size = CPEMI->getOperand(2).getImm();
+  unsigned Size = TII->getInstSizeInBytes(*CPEMI);
   CPEMI->eraseFromParent();
   BBInfoVector &BBInfo = BBUtils->getBBInfo();
   BBUtils->adjustBBSize(CPEBB, -Size);
@@ -2649,11 +2562,8 @@ ARMConstantIslands::fixupUnconditionalBr(ImmBranch &Br) {
       else
         SrcMBB->addSuccessor(VeneerBB);
 
-      const int Delta = TII->getInstSizeInBytes(*NewMI) +
-                        TII->getInstSizeInBytes(*std::prev(NewMI->getIterator())) -
-                        TII->getInstSizeInBytes(*OldMI);
       OldMI->eraseFromParent();
-      BBUtils->adjustBBSize(SrcMBB, Delta);
+      BBUtils->computeBlockSize(SrcMBB);
       BBUtils->adjustBBOffsetsAfter(SrcMBB);
 
       unsigned MaxDisp = getUnconditionalBrDisp(ARM::tB);
@@ -2854,7 +2764,7 @@ ARMConstantIslands::fixupUnconditionalBr(ImmBranch &Br) {
         Br.MaxDisp = (1 << 21) * 2;
         if (AFI->isLRSpilled()) {
           MI = ReplaceWithTBfar(MI, FinalDestBB);
-          BBInfo[MBB->getNumber()].Size += 2;
+          BBUtils->computeBlockSize(MBB);
           BBUtils->adjustBBOffsetsAfter(MBB);
         } else {
           MI = ReplaceWithLRPreservingTBfar(MI, FinalDestBB, DestOff < SrcOff);
@@ -3011,7 +2921,18 @@ ARMConstantIslands::fixupConditionalBr(ImmBranch &Br) {
     ARMCC::CondCodes CC =
         static_cast<ARMCC::CondCodes>(MI->getOperand(1).getImm());
     if (CC >= ARMCC::AL) {
+      MachineBasicBlock *MBB = MI->getParent();
       MI->setDesc(TII->get(ARM::tB));
+      MI->getOperand(1).setImm(ARMCC::AL);
+      MI->getOperand(2).ChangeToRegister(0, false);
+      if (std::next(MI->getIterator()) == MBB->end() &&
+          std::next(MBB->getIterator()) != MF->end()) {
+        MachineBasicBlock *NextBB = &*std::next(MBB->getIterator());
+        if (NextBB != DestBB && MBB->isSuccessor(NextBB))
+          MBB->removeSuccessor(NextBB);
+      }
+      BBUtils->computeBlockSize(MBB);
+      BBUtils->adjustBBOffsetsAfter(MBB);
       Br.MaxDisp = getUnconditionalBrDisp(ARM::tB);
       Br.isCond = false;
       Br.UncondBr = ARM::tB;
@@ -3077,8 +2998,6 @@ ARMConstantIslands::fixupConditionalBr(ImmBranch &Br) {
     splitBlockBeforeInstr(MI);
     // No need for the branch to the next block. We're adding an unconditional
     // branch to the destination.
-    int delta = TII->getInstSizeInBytes(MBB->back());
-    BBUtils->adjustBBSize(MBB, -delta);
     eraseImmBranch(&MBB->back());
     MBB->back().eraseFromParent();
 
@@ -3100,7 +3019,6 @@ ARMConstantIslands::fixupConditionalBr(ImmBranch &Br) {
   BuildMI(MBB, DebugLoc(), TII->get(MI->getOpcode()))
     .addMBB(NextBB).addImm(CC).addReg(CCReg);
   Br.MI = &MBB->back();
-  BBUtils->adjustBBSize(MBB, TII->getInstSizeInBytes(MBB->back()));
   unsigned NewUncondOpc = ExpectedUncondOpc;
   if (isThumb)
     BuildMI(MBB, DebugLoc(), TII->get(NewUncondOpc))
@@ -3108,14 +3026,17 @@ ARMConstantIslands::fixupConditionalBr(ImmBranch &Br) {
         .add(predOps(ARMCC::AL));
   else
     BuildMI(MBB, DebugLoc(), TII->get(NewUncondOpc)).addMBB(DestBB);
-  BBUtils->adjustBBSize(MBB, TII->getInstSizeInBytes(MBB->back()));
   unsigned MaxDisp = getUnconditionalBrDisp(NewUncondOpc);
   addImmBranch(&MBB->back(), MaxDisp, false, false, 0, NewUncondOpc);
 
   // Remove the old conditional branch.  It may or may not still be in MBB.
-  BBUtils->adjustBBSize(MI->getParent(), -TII->getInstSizeInBytes(*MI));
+  MachineBasicBlock *OldCondBB = MI->getParent();
   MI->eraseFromParent();
   Br.UncondBr = ExpectedUncondOpc;
+  // Moving the conditional changes shrinkability in both halves of a split.
+  BBUtils->computeBlockSize(MBB);
+  if (OldCondBB != MBB)
+    BBUtils->computeBlockSize(OldCondBB);
   BBUtils->adjustBBOffsetsAfter(MBB);
   return true;
 }

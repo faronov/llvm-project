@@ -1,0 +1,64 @@
+# RUN: llc -mtriple=tc32-unknown-none-elf -run-pass=arm-cp-islands -verify-machineinstrs %s -o - | FileCheck %s
+
+# Removing the shrinkable conditional must also refresh the block's alignment
+# uncertainty, even when the replacement needs no further relaxation.
+# Both AL and NV must produce a canonical unconditional predicate.
+# CHECK-LABEL: name: al_branch
+# CHECK: bb.0:
+# CHECK: tB %bb.2, 14
+# CHECK-NOT: tBcc
+# CHECK-LABEL: name: nv_branch
+# CHECK: bb.0:
+# CHECK: tB %bb.2, 14
+# CHECK-NOT: tBcc
+
+# TC32 reserves four bytes for both tB and tBfar; the Thumb1 two-byte
+# growth rule must not be applied when LR is already spilled.
+# CHECK-LABEL: name: spilled_branch
+# CHECK: bb.0:
+# CHECK: tBfar %bb.2, 14
+# CHECK-NOT: tPUSH
+
+--- |
+  define void @al_branch() { ret void }
+  define void @nv_branch() { ret void }
+  define void @spilled_branch() { ret void }
+...
+---
+name: al_branch
+alignment: 2
+tracksRegLiveness: true
+body: |
+  bb.0:
+    tBcc %bb.2, 14, $noreg
+  bb.1:
+    dead $r0 = SPACE 300, undef $r0
+  bb.2:
+    tPOP_RET 14, $noreg, def $pc
+...
+---
+name: nv_branch
+alignment: 2
+tracksRegLiveness: true
+body: |
+  bb.0:
+    tBcc %bb.2, 15, $noreg
+  bb.1:
+    dead $r0 = SPACE 300, undef $r0
+  bb.2:
+    tPOP_RET 14, $noreg, def $pc
+...
+---
+name: spilled_branch
+alignment: 2
+tracksRegLiveness: true
+machineFunctionInfo:
+  isLRSpilled: true
+body: |
+  bb.0:
+    tB %bb.2, 14, $noreg
+  bb.1:
+    dead $r0 = SPACE 3000, undef $r0
+  bb.2:
+    tPOP_RET 14, $noreg, def $pc
+...
