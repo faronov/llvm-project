@@ -193,6 +193,21 @@ for neighbor in \
   memcpy-ldm-stm.ll; do
   tests+=("$arm_tests/$neighbor")
 done
+if [[ $variant == candidate ]]; then
+  # Exercise the shared ARM/Thumb island code without changing the pristine
+  # baseline inventory whose exact failures were captured in the reference run.
+  for neighbor in \
+    constant-island-crash.ll \
+    constant-island-movwt.mir \
+    constant-island-SOImm-limit16.mir \
+    constant-islands-cfg.mir \
+    constant-islands-split-IT.mir \
+    constant-islands.ll \
+    jump-table-islands.ll \
+    jump-table-islands-split.ll; do
+    tests+=("$arm_tests/$neighbor")
+  done
+fi
 for test_file in "${tests[@]}"; do
   test -f "$test_file"
 done
