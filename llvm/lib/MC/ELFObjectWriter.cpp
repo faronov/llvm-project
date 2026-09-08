@@ -731,16 +731,7 @@ void ELFWriter::writeSectionData(MCSection &Sec) {
       Ctx.getTargetOptions()->CompressDebugSections;
   if (CompressionType == DebugCompressionType::None ||
       !SectionName.starts_with(".debug_")) {
-    uint64_t StartOffset = W.OS.tell();
     Asm.writeSectionData(W.OS, &Section);
-    if (Ctx.getTargetTriple().isTC32()) {
-      const unsigned Flags = Section.getFlags();
-      if ((Flags & ELF::SHF_ALLOC) && !(Flags & ELF::SHF_EXECINSTR)) {
-        uint64_t Size = W.OS.tell() - StartOffset;
-        uint64_t Padding = alignTo(Size, Section.getAlign()) - Size;
-        W.OS.write_zeros(Padding);
-      }
-    }
     return;
   }
 

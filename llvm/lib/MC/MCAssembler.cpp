@@ -664,6 +664,16 @@ void MCAssembler::writeSectionData(raw_ostream &OS,
   }
 
   flushPendingErrors();
+  // TC32 allocatable data sections include tail padding in their address size.
+  // Emit it here so the section-size invariant also holds for ELF writers.
+  if (getContext().getTargetTriple().isTC32()) {
+    const auto &ELFSec = static_cast<const MCSectionELF &>(*Sec);
+    const unsigned Flags = ELFSec.getFlags();
+    if ((Flags & ELF::SHF_ALLOC) && !(Flags & ELF::SHF_EXECINSTR)) {
+      uint64_t Size = OS.tell() - Start;
+      OS.write_zeros(alignTo(Size, ELFSec.getAlign()) - Size);
+    }
+  }
   assert(getContext().hadError() ||
          OS.tell() - Start == getSectionAddressSize(*Sec));
 }
