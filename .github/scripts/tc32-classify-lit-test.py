@@ -45,10 +45,12 @@ def control_for(command):
 def fixture(variant="baseline"):
     names = set(classifier.BASELINE_NAMES)
     if variant == "candidate":
-        names |= classifier.CANDIDATE_REGRESSIONS
-    tests, controls = [], {}
+        names |= classifier.CANDIDATE_REGRESSIONS | classifier.CANDIDATE_MC_REGRESSIONS
+    tests, selection, controls = [], [], {}
     for name in sorted(names):
-        path = f"{SOURCE}/{name}"
+        suite = "MC/ELF/ARM" if name in classifier.CANDIDATE_MC_REGRESSIONS else "CodeGen/ARM"
+        path = f"/synthetic/llvm-source/llvm/test/{suite}/{name}"
+        selection.append(path)
         code, output = "PASS", "Exit Code: 0\n"
         if variant == "baseline" and name not in classifier.BASELINE_PASSES:
             code = "FAIL"
@@ -86,8 +88,8 @@ def fixture(variant="baseline"):
                     + crash_text(classifier.VISIBLE_FAILURES[name])
                     + "# error: command failed with exit status: -6\n" + tail
                 )
-        tests.append({"name": classifier.PREFIX + name, "code": code, "output": output})
-    return {"tests": tests}, [f"{SOURCE}/{name}" for name in sorted(names)], controls
+        tests.append({"name": f"LLVM :: {suite}/{name}", "code": code, "output": output})
+    return {"tests": tests}, selection, controls
 
 
 class ClassifierTests(unittest.TestCase):
@@ -131,6 +133,28 @@ class ClassifierTests(unittest.TestCase):
                 self.document["tests"][0]["code"] = code
                 with self.assertRaises(ValueError):
                     self.classify("candidate", 1)
+
+    def test_candidate_mc_regression_must_pass_in_its_selected_suite(self):
+        self.document, self.selection, self.controls = fixture("candidate")
+        test = next(t for t in self.document["tests"] if "MC/ELF/ARM/" in t["name"])
+        self.assertEqual(self.classify("candidate", 0)["marker"], "CANDIDATE_LIT_PASS")
+        original = test["name"]
+        test["name"] = original.replace("MC/ELF/ARM", "CodeGen/ARM")
+        with self.assertRaisesRegex(ValueError, "Unexpected suite"):
+            self.classify("candidate", 0)
+        test["name"] = original
+        test["code"] = "UNSUPPORTED"
+        with self.assertRaises(ValueError):
+            self.classify("candidate", 0)
+
+    def test_candidate_cannot_omit_mc_regression(self):
+        self.document, self.selection, self.controls = fixture("candidate")
+        self.selection = [p for p in self.selection if "/MC/" not in p]
+        self.document["tests"] = [
+            t for t in self.document["tests"] if "MC/ELF/ARM/" not in t["name"]
+        ]
+        with self.assertRaisesRegex(ValueError, "Incomplete selected coverage"):
+            self.classify("candidate", 0)
 
     def test_expected_baseline_failures_cannot_pass_or_skip(self):
         for code in ("PASS", "XFAIL", "UNSUPPORTED", "TIMEOUT", "UNRESOLVED"):
@@ -340,6 +364,17 @@ class RecordedEvidenceTests(unittest.TestCase):
     def test_recorded_candidate_failures_are_not_allowed(self):
         _, document, selection = self.load("candidate")
         self.assertEqual(sum(t["code"] == "FAIL" for t in document["tests"]), 23)
+        # Supply only missing new coverage synthetically so the historical
+        # compiler failures, rather than its older inventory, remain the gate.
+        current, current_selection, _ = fixture("candidate")
+        selected_names = {Path(path).name for path in selection}
+        for path in current_selection:
+            if Path(path).name not in selected_names:
+                selection.append(path)
+                document["tests"].append(next(
+                    test for test in current["tests"]
+                    if test["name"].endswith("/" + Path(path).name)
+                ))
         with self.assertRaisesRegex(ValueError, "Expected PASS, got FAIL"):
             classifier.classify("candidate", 1, document, selection, {})
 

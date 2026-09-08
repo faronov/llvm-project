@@ -84,7 +84,9 @@ CANDIDATE_REGRESSIONS = {
     "tc32-packed-byte-load-snapshot.ll",
     "tc32-packed-byte-load-snapshot-semantics.ll",
     "tc32-immediate-expand.mir",
+    "tc32-island-dead-alignment.mir",
 }
+CANDIDATE_MC_REGRESSIONS = {"tc32-data-section-padding.s"}
 
 
 def require(condition, message):
@@ -212,17 +214,21 @@ def check_diagnostic_failure(name, output, source_path, control):
 def classify(variant, status, document, selection, controls):
     require(variant in ("baseline", "candidate"), "Unknown compiler variant")
     require(status in (0, 1), f"llvm-lit runner failed: {status}")
-    paths = {}
+    paths, suites = {}, {}
     for path in selection:
-        match = re.fullmatch(r".*/llvm/test/CodeGen/ARM/([^/]+\.(?:ll|mir))", path)
+        match = re.fullmatch(
+            r".*/llvm/test/(CodeGen/ARM/[^/]+\.(?:ll|mir)|MC/ELF/ARM/[^/]+\.s)",
+            path,
+        )
         require(match is not None, f"Invalid selected test path: {path}")
-        name = match[1]
+        suite, name = match[1].rsplit("/", 1)
         require(name not in paths, f"Duplicate selection: {name}")
         paths[name] = path
+        suites[name] = f"LLVM :: {suite}/"
     selected = set(paths)
     required = BASELINE_NAMES
     if variant == "candidate":
-        required = required | CANDIDATE_REGRESSIONS
+        required = required | CANDIDATE_REGRESSIONS | CANDIDATE_MC_REGRESSIONS
     require(required <= selected, "Incomplete selected coverage")
     if variant == "baseline":
         require(selected == BASELINE_NAMES, "Pristine baseline selection changed")
@@ -233,9 +239,9 @@ def classify(variant, status, document, selection, controls):
     for test in tests:
         full_name, code, output = test["name"], test["code"], test["output"]
         require(isinstance(output, str), "Invalid lit output")
-        require(full_name.startswith(PREFIX), f"Unexpected suite: {full_name}")
-        name = full_name.removeprefix(PREFIX)
+        name = full_name.rsplit("/", 1)[-1]
         require(name in selected and name not in seen, f"Unknown or duplicate test: {full_name}")
+        require(full_name == suites[name] + name, f"Unexpected suite: {full_name}")
         seen.add(name)
         expect_pass = variant == "candidate" or name in BASELINE_PASSES
         if expect_pass:

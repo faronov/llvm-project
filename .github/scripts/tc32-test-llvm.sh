@@ -207,6 +207,7 @@ if [[ $variant == candidate ]]; then
     jump-table-islands-split.ll; do
     tests+=("$arm_tests/$neighbor")
   done
+  tests+=("$source_dir/llvm/test/MC/ELF/ARM/tc32-data-section-padding.s")
 fi
 for test_file in "${tests[@]}"; do
   test -f "$test_file"
