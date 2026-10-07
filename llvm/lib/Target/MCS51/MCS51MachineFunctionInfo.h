@@ -21,6 +21,9 @@ class MCS51MachineFunctionInfo final : public MachineFunctionInfo {
   // frame (a PDATA object), with their byte offset in that frame.
   DenseMap<int, unsigned> StaticFrameOffsets;
   GlobalVariable *StaticFrame = nullptr;
+  // Stack argument bytes already pushed on entry to blocks that start inside
+  // a call sequence; -1 where predecessors disagree.
+  DenseMap<const MachineBasicBlock *, int> ArgBytesAtEntry;
 
 public:
   MCS51MachineFunctionInfo(const Function &, const TargetSubtargetInfo *) {}
@@ -59,6 +62,15 @@ public:
 
   void setDptrAddress(const MachineInstr *MI, Register Base, int64_t Offset) {
     DptrAddresses[MI] = {Base, Offset};
+  }
+
+  void setArgBytesAtEntry(const MachineBasicBlock *MBB, int Bytes) {
+    ArgBytesAtEntry[MBB] = Bytes;
+  }
+  // Returns -1 when unknown or ambiguous.
+  int getArgBytesAtEntry(const MachineBasicBlock *MBB) const {
+    auto It = ArgBytesAtEntry.find(MBB);
+    return It == ArgBytesAtEntry.end() ? -1 : It->second;
   }
 };
 
