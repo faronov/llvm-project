@@ -7,6 +7,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -15,6 +16,21 @@ using namespace llvm;
 #include "MCS51GenRegisterInfo.inc"
 
 MCS51RegisterInfo::MCS51RegisterInfo() : MCS51GenRegisterInfo(MCS51::PC) {}
+
+// Experimental: narrow the callee-saved set. This changes the C ABI, so every
+// object that calls or is called by another (including the runtime library)
+// must be built with the same value.
+namespace {
+enum class CSRSet { Default, R, None };
+}
+static cl::opt<CSRSet> CSRMode(
+    "mcs51-csr", cl::Hidden, cl::init(CSRSet::Default),
+    cl::desc("MCS51 callee-saved register set"),
+    cl::values(clEnumValN(CSRSet::Default, "default", "R2-R7 and IM8-IM23"),
+               clEnumValN(CSRSet::R, "r", "R2-R7"),
+               clEnumValN(CSRSet::None, "none", "no callee-saved registers")));
+
+bool llvm::mcs51UseCallRegMask() { return CSRMode != CSRSet::Default; }
 
 const MCPhysReg *
 MCS51RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
@@ -27,11 +43,19 @@ MCS51RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   if (MF && MF->getFunction().getName() == "main" &&
       MF->getTarget().getTargetCPU().equals_insensitive("cc2530"))
     return MainSaveList;
+  if (CSRMode == CSRSet::R)
+    return CSR_MCS51_R_SaveList;
+  if (CSRMode == CSRSet::None)
+    return CSR_MCS51_None_SaveList;
   return CSR_MCS51_SaveList;
 }
 
 const uint32_t *MCS51RegisterInfo::getCallPreservedMask(
     const MachineFunction &, CallingConv::ID) const {
+  if (CSRMode == CSRSet::R)
+    return CSR_MCS51_R_RegMask;
+  if (CSRMode == CSRSet::None)
+    return CSR_MCS51_None_RegMask;
   return CSR_MCS51_RegMask;
 }
 
