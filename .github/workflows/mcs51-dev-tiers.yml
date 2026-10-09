@@ -1,0 +1,58 @@
+name: MCS51 dev tiers
+
+# CC2530 firmware tiers for compiler changes on the user-owned development line
+# (faronov/cc2530-zigbee docs/LLVM_DEVELOPMENT.md):
+#   push mcs51-dev / mcs51/feature-*   FAST
+#   pull request into mcs51-dev        FAST + SMOKE
+#   workflow_dispatch                  fast | smoke | full (complete case 0, multi-hour)
+# Nightly FULL is NOT scheduled: GitHub runs schedules only from the default branch,
+# which in this repository is the unrelated TC32 branch and must not change.
+
+on:
+  push:
+    branches: [mcs51-dev, 'mcs51/feature-**']
+    paths:
+      - 'llvm/**'
+      - 'clang/**'
+      - 'lld/**'
+      - 'cmake/**'
+      - '!**/docs/**'
+      - '!**/*.md'
+      - '.github/workflows/mcs51-dev-tiers.yml'
+  pull_request:
+    branches: [mcs51-dev]
+    paths:
+      - 'llvm/**'
+      - 'clang/**'
+      - 'lld/**'
+      - 'cmake/**'
+      - '!**/docs/**'
+      - '!**/*.md'
+      - '.github/workflows/mcs51-dev-tiers.yml'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: fast, smoke or full (full includes complete case 0, several hours)
+        type: choice
+        options: [fast, smoke, full]
+        default: fast
+      firmware_ref:
+        description: faronov/cc2530-zigbee branch, tag or commit
+        default: llvm-dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcs51-dev-tiers-${{ github.ref }}-${{ inputs.tier || github.event_name }}
+  cancel-in-progress: ${{ inputs.tier != 'full' }}
+
+jobs:
+  tiers:
+    uses: faronov/cc2530-zigbee/.github/workflows/llvm-tiers.yml@llvm-dev
+    with:
+      tier: ${{ inputs.tier || (github.event_name == 'pull_request' && 'smoke' || 'fast') }}
+      llvm_repository: ${{ github.repository }}
+      llvm_ref: ${{ github.sha }}
+      firmware_repository: faronov/cc2530-zigbee
+      firmware_ref: ${{ inputs.firmware_ref || 'llvm-dev' }}
