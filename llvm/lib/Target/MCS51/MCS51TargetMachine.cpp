@@ -2023,12 +2023,14 @@ public:
     // converge: inside a CFG cycle a stale register, or the alternation
     // between a super-register and its sub-registers, can rotate between
     // blocks forever. Starting from empty live-in lists makes each update
-    // monotone, so the iteration terminates at the exact liveness.
+    // monotone, so the iteration terminates at the exact liveness. Live-in
+    // dataflow flows against layout order, so visiting blocks in reverse
+    // avoids one sweep per block on long paths.
     SmallVector<MachineBasicBlock *, 16> Blocks;
-    for (MachineBasicBlock &MBB : MF) {
+    for (MachineBasicBlock &MBB : MF)
       MBB.clearLiveIns();
-      Blocks.push_back(&MBB);
-    }
+    for (auto I = MF.rbegin(), E = MF.rend(); I != E; ++I)
+      Blocks.push_back(&*I);
     fullyRecomputeLiveIns(Blocks);
     return Changed;
   }
