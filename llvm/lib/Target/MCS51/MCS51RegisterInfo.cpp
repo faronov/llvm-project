@@ -48,6 +48,44 @@ bool llvm::mcs51WideArgs() {
   return WideArgs;
 }
 
+// Operand state for storing one byte of a spilled register at I. The
+// allocator spills a whole pair when only one of its lanes is live, so the
+// other byte may hold no value. Walking backwards mirrors MachineVerifier's
+// liveness transfer: a live def makes the byte defined, while a kill, a dead
+// def or a register-mask clobber ends its live range.
+static RegState spillByteState(const MachineInstr &At, MCRegister Byte,
+                               const TargetRegisterInfo &TRI) {
+  const MachineBasicBlock &MBB = *At.getParent();
+  for (auto It = At.getIterator(); It != MBB.instr_begin();) {
+    --It;
+    if (It->isDebugInstr())
+      continue;
+    bool Ends = false;
+    for (const MachineOperand &MO : It->operands()) {
+      if (MO.isRegMask()) {
+        Ends |= MO.clobbersPhysReg(Byte);
+        continue;
+      }
+      if (!MO.isReg() || !MO.getReg().isPhysical() ||
+          !TRI.regsOverlap(MO.getReg(), Byte))
+        continue;
+      if (MO.isDef()) {
+        if (!MO.isDead())
+          return RegState{};
+        Ends = true;
+      } else if (MO.isKill()) {
+        Ends = true;
+      }
+    }
+    if (Ends)
+      return RegState::Undef;
+  }
+  for (const MachineBasicBlock::RegisterMaskPair &LI : MBB.liveins())
+    if (TRI.regsOverlap(LI.PhysReg, Byte))
+      return RegState{};
+  return RegState::Undef;
+}
+
 const MCPhysReg *
 MCS51RegisterInfo::getCalleeSavedRegs(const MachineFunction *) const {
   if (CSRMode == CSRSet::R)
@@ -138,19 +176,7 @@ bool MCS51RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   // whole pair when one of its lanes is live. Storing the other half is then
   // a use of an undefined register, which is flagged as such.
   auto ByteUndef = [&](Register Byte) {
-    for (auto It = I; It != MBB.begin();) {
-      --It;
-      if (It->isDebugInstr())
-        continue;
-      if (It->modifiesRegister(Byte, this))
-        return RegState{};
-      if (It->killsRegister(Byte, this))
-        return RegState::Undef;
-    }
-    for (const MachineBasicBlock::RegisterMaskPair &LI : MBB.liveins())
-      if (regsOverlap(LI.PhysReg, Byte))
-        return RegState{};
-    return RegState::Undef;
+    return spillByteState(*I, Byte.asMCReg(), *this);
   };
   auto EmitAddressAtOffset = [&](int64_t AddressOffset) {
     BuildMI(MBB, I, DL, TII.get(MCS51::MOV_A_DIRECT), MCS51::A).addImm(0x81);
@@ -459,19 +485,7 @@ bool MCS51RegisterInfo::eliminateStaticFrameIndex(
   auto PairLo = [&](Register Pair) { return getSubReg(Pair, MCS51::sub_lo); };
   auto PairHi = [&](Register Pair) { return getSubReg(Pair, MCS51::sub_hi); };
   auto ByteUndef = [&](Register Byte) {
-    for (auto It = I; It != MBB.begin();) {
-      --It;
-      if (It->isDebugInstr())
-        continue;
-      if (It->modifiesRegister(Byte, this))
-        return RegState{};
-      if (It->killsRegister(Byte, this))
-        return RegState::Undef;
-    }
-    for (const MachineBasicBlock::RegisterMaskPair &LI : MBB.liveins())
-      if (regsOverlap(LI.PhysReg, Byte))
-        return RegState{};
-    return RegState::Undef;
+    return spillByteState(*I, Byte.asMCReg(), *this);
   };
   auto IsLiveAfter = [&](MCRegister Reg) {
     for (auto It = std::next(MI); It != MBB.end(); ++It) {

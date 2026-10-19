@@ -2016,9 +2016,18 @@ public:
       }
     }
 
+    // The folds above can leave stale live-ins, and register allocation
+    // records lane-masked live-ins in a different form than LivePhysRegs
+    // produces. Iterating recomputeLiveIns from such a state need not
+    // converge: inside a CFG cycle a stale register, or the alternation
+    // between a super-register and its sub-registers, can rotate between
+    // blocks forever. Starting from empty live-in lists makes each update
+    // monotone, so the iteration terminates at the exact liveness.
     SmallVector<MachineBasicBlock *, 16> Blocks;
-    for (MachineBasicBlock &MBB : MF)
+    for (MachineBasicBlock &MBB : MF) {
+      MBB.clearLiveIns();
       Blocks.push_back(&MBB);
+    }
     fullyRecomputeLiveIns(Blocks);
     return Changed;
   }
