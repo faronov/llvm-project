@@ -38,7 +38,7 @@ on:
         default: fast
       firmware_ref:
         description: faronov/cc2530-zigbee branch, tag or commit
-        default: llvm-dev
+        default: main
 
 permissions:
   contents: read
@@ -49,10 +49,10 @@ concurrency:
 
 jobs:
   tiers:
-    uses: faronov/cc2530-zigbee/.github/workflows/llvm-tiers.yml@llvm-dev
+    uses: faronov/cc2530-zigbee/.github/workflows/llvm-tiers.yml@main
     with:
       tier: ${{ inputs.tier || (github.event_name == 'pull_request' && 'smoke' || 'fast') }}
       llvm_repository: ${{ github.repository }}
       llvm_ref: ${{ github.sha }}
       firmware_repository: faronov/cc2530-zigbee
-      firmware_ref: ${{ inputs.firmware_ref || 'llvm-dev' }}
+      firmware_ref: ${{ inputs.firmware_ref || 'main' }}
