@@ -84,7 +84,6 @@ jobs:
           - {host: linux-amd64, runs_on: ubuntu-24.04, is_windows: false}
           - {host: linux-arm64, runs_on: ubuntu-24.04-arm, is_windows: false}
           - {host: macos-amd64, runs_on: macos-15-intel, is_windows: false}
-          - {host: macos-arm64, runs_on: macos-26, is_windows: false}
           - {host: windows-amd64, runs_on: windows-2025, is_windows: true}
     env:
       NAME: ${{ needs.source.outputs.tag }}-${{ matrix.host }}
@@ -250,7 +249,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          test "$(ls | wc -l)" -eq 5
+          test "$(ls | wc -l)" -eq 4
           sha256sum -- * > SHA256SUMS
           cat > ../notes.md <<EOF
           MCS-51 / CC2530 LLVM ${VERSION} toolchain built from \`${SHA}\`
@@ -261,6 +260,7 @@ jobs:
           object and linker script in \`lib/clang/${VERSION%%.*}/mcs51/\`, and
           \`mcs51-toolchain.json\` with the source commit and build flags.
           Verify downloads with \`sha256sum -c SHA256SUMS --ignore-missing\`.
+          On Apple Silicon use the macos-amd64 archive through Rosetta 2.
 
           \`\`\`
           $(cat SHA256SUMS)
