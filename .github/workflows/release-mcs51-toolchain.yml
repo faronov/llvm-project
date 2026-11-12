@@ -84,10 +84,12 @@ jobs:
           - {host: linux-amd64, runs_on: ubuntu-24.04, is_windows: false}
           - {host: linux-arm64, runs_on: ubuntu-24.04-arm, is_windows: false}
           - {host: macos-amd64, runs_on: macos-15-intel, is_windows: false}
-          - {host: macos-arm64, runs_on: macos-15, is_windows: false}
+          - {host: macos-arm64, runs_on: macos-26, is_windows: false}
           - {host: windows-amd64, runs_on: windows-2025, is_windows: true}
     env:
       NAME: ${{ needs.source.outputs.tag }}-${{ matrix.host }}
+      # Keep the macOS binaries runnable on hosts older than the runner image.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
       SHA: ${{ needs.source.outputs.sha }}
       CMAKE_FLAGS: >-
         -DCMAKE_BUILD_TYPE=Release
