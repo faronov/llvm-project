@@ -272,7 +272,12 @@ bool MCS51::relaxOnce(int Pass) const {
       continue;
     for (InputSection *Sec : getInputSections(*OSec, Storage)) {
       MutableArrayRef<Relocation> Relocs = Sec->relocs();
+      // Bank-call trampolines keep their fixed 11-byte LCALL shape.
+      bool IsThunkSection = Sec->name.starts_with(".text.bankthunks.") ||
+                            Sec->name.starts_with(".text.autobankthunks.");
       auto isRelaxableCodeTransfer = [&](const Relocation &R) {
+        if (IsThunkSection)
+          return false;
         if (R.type != R_8051_16_BE || !R.sym || R.offset == 0 ||
             R.offset >= Sec->content().size())
           return false;

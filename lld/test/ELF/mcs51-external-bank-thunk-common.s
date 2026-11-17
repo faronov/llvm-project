@@ -48,9 +48,12 @@ __mcs51_bankcall_banked_fn:
 # The bypassed call relaxes to ACALL in the callee's page.
 # CHECK:      <reset>:
 # CHECK-NEXT:   11 94        acall 148
-# CHECK-NEXT:   12 00 a2     lcall 162
+# CHECK-NEXT:   12 00 a3     lcall 163
 # CHECK:      00000094 <common_fn>:
-# CHECK:      000000a2 <__mcs51_bankcall_banked_fn>:
+# Trampolines keep their LCALL shape even when the callee is in the page.
+# CHECK:      00000098 <__mcs51_bankcall_common_fn>:
+# CHECK:        12 00 94     lcall 148
+# CHECK:      000000a3 <__mcs51_bankcall_banked_fn>:
 # CHECK-NEXT:   c0 9f        push 159
 # CHECK-NEXT:   75 9f 01     mov 159, #1
 # CHECK-NEXT:   12 80 00     lcall 32768
