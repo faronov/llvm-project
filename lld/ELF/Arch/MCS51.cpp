@@ -226,8 +226,17 @@ bool MCS51::relaxOnce(int Pass) const {
     for (InputSection *Sec : getInputSections(*OSec, Storage)) {
       MutableArrayRef<Relocation> Relocs = Sec->relocs();
       if (Pass == 0) {
-        bool HasRelaxable = llvm::any_of(
-            Relocs, [](const Relocation &R) { return R.type == R_8051_RELAX; });
+        bool HasRelaxable = llvm::any_of(Relocs, [&](const Relocation &R) {
+          if (R.type == R_8051_RELAX || R.type == R_8051_DPTR16 ||
+              R.type == R_8051_DPTR16_XDATA ||
+              R.type == R_8051_DPTR16_CODE)
+            return true;
+          if (R.type != R_8051_16_BE || !R.sym || !R.sym->isFunc() ||
+              R.offset == 0 || R.offset >= Sec->content().size())
+            return false;
+          uint8_t opcode = Sec->content()[R.offset - 1];
+          return opcode == 0x12 || opcode == 0x02; // LCALL or LJMP
+        });
         if (!HasRelaxable)
           continue;
         Sec->relaxAux = make<RelaxAux>();
@@ -323,6 +332,33 @@ bool MCS51::relaxOnce(int Pass) const {
               HavePrevious = false;
             }
           }
+        } else if (R.type == R_8051_16_BE && R.sym && R.sym->isFunc() &&
+                   R.offset > 0 && R.offset < Sec->content().size()) {
+          // Direct transfers within a bank can use the two-byte ACALL/AJMP
+          // encoding when the destination is in the same 2 KiB page. This
+          // removes one byte from the input section and lets the normal
+          // address assignment loop account for the shorter instruction.
+          uint8_t opcode = Sec->content()[R.offset - 1];
+          if (opcode == 0x12 || opcode == 0x02) {
+            auto *target = dyn_cast<Defined>(R.sym);
+            auto *targetInput =
+                target ? dyn_cast_or_null<InputSection>(target->section)
+                       : nullptr;
+            unsigned targetBank =
+                targetInput
+                    ? getMCS51CodeBank(targetInput->getOutputSection())
+                    : 0;
+            unsigned callerBank = getMCS51CodeBank(Sec->getOutputSection());
+            uint64_t transferVA = Sec->getVA() + R.offset - Delta;
+            uint64_t destinationVA =
+                Sec->getRelocTargetVA(ctx, R, transferVA);
+            uint64_t nextPC = transferVA + 2;
+            if (targetInput && (targetInput->flags & SHF_EXECINSTR) &&
+                targetBank == callerBank &&
+                (destinationVA & ~uint64_t(0x7ff)) ==
+                    (nextPC & ~uint64_t(0x7ff)))
+              Remove = 1;
+          }
         }
         for (; !Anchors.empty() && Anchors.front().offset <= R.offset;
              Anchors = Anchors.drop_front()) {
@@ -378,11 +414,23 @@ void MCS51::finalizeRelax(int Passes) const {
         size_t CopySize = OpcodeOffset - Src;
         std::memcpy(New + Dst, Old.data() + Src, CopySize);
         Dst += CopySize;
-        New[Dst++] = 0xa3; // INC DPTR replaces MOV DPTR,#symbol.
-        Src = R.offset + 2;
-        R.type = R_8051_NONE;
-        if (I + 1 < Relocs.size() && Relocs[I + 1].type == R_8051_RELAX)
-          Relocs[I + 1].type = R_8051_NONE;
+        if (RemovedHere == 1) {
+          // Replace LCALL/LJMP (opcode, high address, low address) with
+          // ACALL/AJMP (opcode, low address). R.offset already points at the
+          // low byte in the shortened instruction after earlier removals.
+          New[Dst++] = Old[OpcodeOffset] == 0x12 ? 0x11 : 0x01;
+          New[Dst++] = Old[R.offset + 1];
+          R.type = R_8051_11;
+          R.offset = OpcodeOffset;
+        } else {
+          New[Dst++] = 0xa3; // INC DPTR replaces MOV DPTR,#symbol.
+          Src = R.offset + 2;
+          R.type = R_8051_NONE;
+          if (I + 1 < Relocs.size() && Relocs[I + 1].type == R_8051_RELAX)
+            Relocs[I + 1].type = R_8051_NONE;
+        }
+        if (RemovedHere == 1)
+          Src = R.offset + 2;
       }
       std::memcpy(New + Dst, Old.data() + Src, Old.size() - Src);
       Sec->content_ = New;
