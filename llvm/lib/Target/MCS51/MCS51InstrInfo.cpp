@@ -685,6 +685,11 @@ outliner::InstrType MCS51InstrInfo::getOutliningTypeImpl(
         return outliner::InstrType::Illegal;
       continue;
     }
+    // SP is also reached as the direct address 0x81. Inside the helper it is
+    // two bytes deeper (the return address), so SP-relative frame addresses
+    // would point at the wrong slot.
+    if (MO.isImm() && MO.getImm() == 0x81)
+      return outliner::InstrType::Illegal;
     if (MO.isImm() || MO.isCImm() || MO.isGlobal() || MO.isSymbol())
       continue;
     return outliner::InstrType::Illegal;
