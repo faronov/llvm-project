@@ -902,6 +902,65 @@ struct MCS51AutoBankGroup {
   uint64_t size = 0;
 };
 
+// Machine-outlined helpers are entered with a plain LCALL from their callers,
+// so they must be placed in the same flash bank as every caller (or in common
+// flash).
+static bool isMCS51OutlinedSection(StringRef name) {
+  return name.starts_with(".text.__mcs51_outlined.");
+}
+
+static bool isMCS51AutoTextSection(StringRef name) {
+  if (isMCS51OutlinedSection(name))
+    return true;
+  return name.starts_with(".text.") && name != ".text.main" &&
+         !name.starts_with(".text.main.") &&
+         !name.starts_with(".text.startup") &&
+         !name.starts_with(".text.__mcs51_") &&
+         !name.starts_with(".text.bankthunks.") &&
+         !name.starts_with(".text.autobankthunks.");
+}
+
+template <class RelsTy>
+static void forEachMCS51RelocTarget(InputSection &source, const RelsTy &rels,
+                                    function_ref<void(InputSectionBase *)> fn) {
+  for (const auto &relocation : rels) {
+    Symbol &symbol = source.file->getRelocTargetSym(relocation);
+    if (auto *defined = dyn_cast<Defined>(&symbol))
+      if (auto *target =
+              dyn_cast_or_null<InputSectionBase>(defined->section))
+        fn(target);
+  }
+}
+
+static void forEachMCS51RelocTarget(InputSection &source,
+                                    function_ref<void(InputSectionBase *)> fn) {
+  const RelsOrRelas<ELF32LE> relocs = source.relsOrRelas<ELF32LE>();
+  forEachMCS51RelocTarget(source, relocs.rels, fn);
+  forEachMCS51RelocTarget(source, relocs.relas, fn);
+  forEachMCS51RelocTarget(source, relocs.crels, fn);
+}
+
+// Outlined helpers referenced from code that is not placed automatically stay
+// in common flash, where every caller can reach them.
+static DenseSet<InputSectionBase *>
+collectMCS51CommonOutlinedHelpers(Ctx &ctx, bool autoText) {
+  DenseSet<InputSectionBase *> pinned;
+  for (InputSectionBase *base : ctx.inputSections) {
+    auto *source = dyn_cast<InputSection>(base);
+    if (!source || !source->isLive() || !(source->flags & SHF_EXECINSTR) ||
+        source->file->kind() != InputFile::ObjKind)
+      continue;
+    if (source->name.starts_with(".mcs51.autobank.") ||
+        (autoText && isMCS51AutoTextSection(source->name)))
+      continue;
+    forEachMCS51RelocTarget(*source, [&](InputSectionBase *target) {
+      if (isMCS51OutlinedSection(target->name))
+        pinned.insert(target);
+    });
+  }
+  return pinned;
+}
+
 static SmallVector<MCS51AutoBankGroup, 0>
 groupMCS51AutoBankSections(ArrayRef<InputSectionBase *> sections) {
   DenseMap<InputSectionBase *, unsigned> sectionIndices;
@@ -925,7 +984,13 @@ groupMCS51AutoBankSections(ArrayRef<InputSectionBase *> sections) {
   };
   auto joinPCRelativeTarget = [&](InputSection &source,
                                   const auto &relocation) {
-    if (relocation.getType(false) != R_8051_PCREL8)
+    Symbol &symbol = source.file->getRelocTargetSym(relocation);
+    auto *defined = dyn_cast<Defined>(&symbol);
+    auto *section = defined ? dyn_cast_or_null<InputSectionBase>(
+                                  defined->section)
+                            : nullptr;
+    if (relocation.getType(false) != R_8051_PCREL8 &&
+        !(section && isMCS51OutlinedSection(section->name)))
       return;
     auto sourceIt = sectionIndices.find(&source);
     if (sourceIt == sectionIndices.end())
@@ -1127,6 +1192,8 @@ void LinkerScript::distributeMCS51AutoBankSections() {
     InputSectionDescription *source;
   };
   SmallVector<Candidate, 0> candidates;
+  DenseSet<InputSectionBase *> commonHelpers =
+      collectMCS51CommonOutlinedHelpers(ctx, haveAllBanks);
   for (SectionCommand *cmd : sectionCommands) {
     auto *osd = dyn_cast<OutputDesc>(cmd);
     if (!osd)
@@ -1136,16 +1203,11 @@ void LinkerScript::distributeMCS51AutoBankSections() {
       if (!isd)
         continue;
       for (InputSectionBase *section : isd->sectionBases) {
-        if (!section->isLive())
+        if (!section->isLive() || commonHelpers.contains(section))
           continue;
         bool ExplicitAutoBank = section->name.starts_with(".mcs51.autobank.");
-        bool AutoText = haveAllBanks && section->name.starts_with(".text.") &&
-                        section->name != ".text.main" &&
-                        !section->name.starts_with(".text.main.") &&
-                        !section->name.starts_with(".text.startup") &&
-                        !section->name.starts_with(".text.__mcs51_") &&
-                        !section->name.starts_with(".text.bankthunks.") &&
-                        !section->name.starts_with(".text.autobankthunks.");
+        bool AutoText =
+            haveAllBanks && isMCS51AutoTextSection(section->name);
         if (!ExplicitAutoBank && !AutoText)
           continue;
         if (!(section->flags & SHF_EXECINSTR)) {
@@ -1259,13 +1321,7 @@ void LinkerScript::fillMCS51CommonSpace() {
           InputSection *section = *it;
           StringRef name = section->name;
           bool AutoBank = name.starts_with(".mcs51.autobank.");
-          bool AutoText = name.starts_with(".text.") &&
-                          name != ".text.main" &&
-                          !name.starts_with(".text.main.") &&
-                          !name.starts_with(".text.startup") &&
-                          !name.starts_with(".text.__mcs51_") &&
-                          !name.starts_with(".text.bankthunks.") &&
-                          !name.starts_with(".text.autobankthunks.");
+          bool AutoText = isMCS51AutoTextSection(name);
           if ((AutoBank || AutoText) && section->isLive()) {
             candidates.push_back({section});
             it = isd->sections.erase(it);

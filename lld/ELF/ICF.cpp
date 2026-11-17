@@ -191,6 +191,12 @@ static bool isEligible(InputSection *s) {
   if (isValidCIdentifier(s->name))
     return false;
 
+  // MCS-51 outlined helpers are entered with a plain LCALL and must share a
+  // flash bank with every caller. Folding helpers of different objects would
+  // join otherwise unrelated bank-placement groups.
+  if (s->name.starts_with(".text.__mcs51_outlined."))
+    return false;
+
   return true;
 }
 
