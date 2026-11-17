@@ -486,6 +486,8 @@ MCS51TargetLowering::MCS51TargetLowering(const TargetMachine &TM,
   // The dispatcher has a fixed setup cost. Use tables only when enough dense
   // cases can repay it.
   setMinimumJumpTableEntries(16);
+  // The dispatcher scales only the low byte of the index.
+  setMaximumJumpTableSize(256);
   setOperationAction(ISD::BR_JT, MVT::Other, Custom);
   setOperationAction(ISD::ADD, MVT::i16, Custom);
   setTargetDAGCombine(ISD::ADD);
@@ -681,7 +683,7 @@ SDValue MCS51TargetLowering::LowerOperation(SDValue Op,
     SDValue Chain = Op.getOperand(0);
     auto *JT = cast<JumpTableSDNode>(Op.getOperand(1));
     SDValue Index = DAG.getZExtOrTrunc(Op.getOperand(2), DL, MVT::i16);
-    SDValue TargetJT = DAG.getTargetJumpTable(JT->getIndex(), MVT::i32);
+    SDValue TargetJT = DAG.getTargetJumpTable(JT->getIndex(), MVT::i16);
     return DAG.getNode(MCS51ISD::BR_JT, DL, MVT::Other, Chain, TargetJT,
                        Index);
   }

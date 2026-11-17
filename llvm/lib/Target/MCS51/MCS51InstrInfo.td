@@ -168,7 +168,7 @@ def SDT_MCS51BrBit : SDTypeProfile<0, 4, [SDTCisVT<0, i8>, SDTCisVT<1, i8>,
                                           SDTCisVT<3, OtherVT>] >;
 def MCS51br_bit : SDNode<"MCS51ISD::BR_BIT", SDT_MCS51BrBit,
                           [SDNPHasChain]>;
-def SDT_MCS51BrJT : SDTypeProfile<0, 2, [SDTCisVT<0, i32>,
+def SDT_MCS51BrJT : SDTypeProfile<0, 2, [SDTCisVT<0, i16>,
                                          SDTCisVT<1, i16>] >;
 def MCS51brjt : SDNode<"MCS51ISD::BR_JT", SDT_MCS51BrJT, [SDNPHasChain]>;
 def SDT_MCS51LoadStack8 : SDTypeProfile<1, 1, [SDTCisVT<0, i8>,
@@ -251,10 +251,10 @@ def JMP_ADPTR : MCS51Inst<0x73, "jmp @a+dptr"> {
   let Uses = [A, DPTR];
 }
 
-def MCS51JumpTable : Operand<i32>;
+def MCS51JumpTable : Operand<i16>;
 let Defs = [A, B, DPTR, R6, R7], isBranch = 1, isIndirectBranch = 1,
     isTerminator = 1, isBarrier = 1, isPseudo = 1, isCodeGenOnly = 1,
-    Size = 24 in
+    Size = 28 in
 def BR_JT : Instruction {
   let Namespace = "MCS51";
   let OutOperandList = (outs);
