@@ -95,18 +95,21 @@ __mcs51_bankcall_local:
 # CHECK:      00000094 <__mcs51_bankcall_near>:
 # CHECK-NEXT:   c0 9f        push 159
 # CHECK-NEXT:   75 9f 01     mov 159, #1
-# CHECK-NEXT:   12 80 12     lcall 32786
+# CHECK-NEXT:   12 80 0f     lcall 32783
 # CHECK:      0000009f <__mcs51_bankcall_far>:
 # CHECK:      000000aa <__mcs51_bankcall_stackarg>:
 # CHECK:      000000b5 <__mcs51_bankcall_local>:
+
+# Bypassed transfers relax to ACALL/AJMP against the callee's page, and the
+# section shrinks so the callees move down.
 # CHECK:      00008000 <caller>:
-# CHECK-NEXT:   12 80 12     lcall 32786
+# CHECK-NEXT:   11 0f        acall 32783
 # CHECK-NEXT:   12 00 9f     lcall 159
 # CHECK-NEXT:   12 00 aa     lcall 170
-# CHECK-NEXT:   12 80 14     lcall 32788
+# CHECK-NEXT:   11 11        acall 32785
 # CHECK-NEXT:   90 00 94     mov dptr, #148
-# CHECK-NEXT:   02 80 12     ljmp 32786
-# CHECK:      00008012 <near>:
-# CHECK:      00008014 <local>:
+# CHECK-NEXT:   01 0f        ajmp 32783
+# CHECK:      0000800f <near>:
+# CHECK:      00008011 <local>:
 # CHECK:      00008001 <other>:
 # CHECK-NEXT:   12 00 94     lcall 148

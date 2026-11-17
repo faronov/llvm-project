@@ -53,7 +53,7 @@ int main(void) { return banked_global_pointer_caller(0); }
 // LINK: lcall 32768
 // LINK-LABEL: <banked_pointer_caller>:
 // LINK: mov dptr, #
-// LINK: lcall
+// LINK: {{(lcall|acall)}}
 // LINK-LABEL: <invoke_function_pointer>:
 // LINK: {{(lcall|acall)}}
 // LINK: jmp @a+dptr

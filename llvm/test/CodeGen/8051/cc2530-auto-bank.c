@@ -97,8 +97,9 @@ int main(void) {
 // LINK: lcall {{3[2-9][0-9][0-9][0-9]}}
 // LINK-LABEL: <__mcs51_bankcall_call_other_bank>:
 // LINK: mov 159, #{{[1-7]}}
-// Same-bank calls skip the trampoline and enter the callee in bank space.
+// Same-bank calls skip the trampoline, enter the callee in bank space and
+// relax to ACALL within the 2 KiB page.
 // LINK-LABEL: <call_banked>:
-// LINK-NEXT: lcall {{3[2-9][0-9][0-9][0-9]}}
+// LINK-NEXT: acall {{3[2-9][0-9][0-9][0-9]}}
 // LINK-LABEL: <call_other_bank>:
-// LINK-NEXT: lcall {{3[2-9][0-9][0-9][0-9]}}
+// LINK-NEXT: acall {{3[2-9][0-9][0-9][0-9]}}
