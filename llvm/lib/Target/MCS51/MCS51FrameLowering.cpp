@@ -352,14 +352,21 @@ getInterruptSaveAddresses(const MachineFunction &MF, bool Reverse) {
   const auto &TRI = *MF.getSubtarget().getRegisterInfo();
   // Imaginary registers are DATA RAM bytes the interrupted code may be using.
   std::set<unsigned> SaveImag;
+  // -mcs51-rn-words aliases (direct addresses 2-5) are bank-0 R registers.
+  auto MarkImag = [&](unsigned Address) {
+    if (Address < 8)
+      SaveR[Address] = true;
+    else
+      SaveImag.insert(Address);
+  };
   auto Mark = [&](MCRegister Reg) {
     if (MCS51::MCS51Imag8RegClass.contains(Reg)) {
-      SaveImag.insert(TRI.getEncodingValue(Reg));
+      MarkImag(TRI.getEncodingValue(Reg));
       return;
     }
     if (MCS51::MCS51GPR16RegClass.contains(Reg)) {
-      SaveImag.insert(TRI.getEncodingValue(TRI.getSubReg(Reg, MCS51::sub_lo)));
-      SaveImag.insert(TRI.getEncodingValue(TRI.getSubReg(Reg, MCS51::sub_hi)));
+      MarkImag(TRI.getEncodingValue(TRI.getSubReg(Reg, MCS51::sub_lo)));
+      MarkImag(TRI.getEncodingValue(TRI.getSubReg(Reg, MCS51::sub_hi)));
       return;
     }
     switch (Reg) {

@@ -13,6 +13,10 @@ namespace llvm {
 // matching call-preserved register mask.
 bool mcs51UseCallRegMask();
 bool mcs51WideArgs();
+bool mcs51RnWords();
+bool mcs51RnShrink();
+// The register that carries word I (0-3) of an argument list or result.
+MCRegister mcs51WordReg(unsigned I);
 
 class MCS51RegisterInfo final : public MCS51GenRegisterInfo {
 public:

@@ -233,6 +233,28 @@ class MCS51AsmParser final : public MCTargetAsmParser {
                                MCStreamer &Out, uint64_t &ErrorInfo,
                                bool MatchingInlineAsm) override {
     MCInst Inst;
+    // mov Rn, #lo8(sym) / #hi8(sym) and their xdata/code forms.
+    if (Operands.size() == 4 &&
+        static_cast<MCS51Operand &>(*Operands[3]).SymByte &&
+        static_cast<MCS51Operand &>(*Operands[0]).getToken().equals_insensitive(
+            "mov") &&
+        Operands[1]->isReg() && Operands[1]->getReg() >= MCS51::R0 &&
+        Operands[1]->getReg() <= MCS51::R7) {
+      auto &Byte = static_cast<MCS51Operand &>(*Operands[3]);
+      bool Lo = Byte.SymByte == 1;
+      if (Byte.AddressSpaceTag == 1)
+        Inst.setOpcode(Lo ? MCS51::MOV_RN_SYMLO_XDATA
+                          : MCS51::MOV_RN_SYMHI_XDATA);
+      else if (Byte.AddressSpaceTag == 2)
+        Inst.setOpcode(Lo ? MCS51::MOV_RN_SYMLO_CODE
+                          : MCS51::MOV_RN_SYMHI_CODE);
+      else
+        Inst.setOpcode(Lo ? MCS51::MOV_RN_SYMLO : MCS51::MOV_RN_SYMHI);
+      Inst.addOperand(MCOperand::createReg(Operands[1]->getReg()));
+      Inst.addOperand(MCOperand::createExpr(Byte.getImm()));
+      Out.emitInstruction(Inst, getSTI());
+      return false;
+    }
     // mov direct, #lo8(sym) / #hi8(sym): the byte of an address, loaded into
     // one of the imaginary registers.
     if (Operands.size() == 4 &&

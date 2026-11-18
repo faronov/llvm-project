@@ -99,7 +99,30 @@ def IP8 : MCS51ImagPair<8, IM16, IM17>;
 def IP9 : MCS51ImagPair<9, IM18, IM19>;
 def IP10 : MCS51ImagPair<10, IM20, IM21>;
 def IP11 : MCS51ImagPair<11, IM22, IM23>;
-def MCS51Imag8 : RegisterClass<"MCS51", [i8], 8, (sequence "IM%d", 0, 23)>;
+// -mcs51-rn-words: the first two argument/result words live in R2R3 and R4R5
+// instead of DATA 0x30-0x33. IMR0-IMR3 are those bank-0 registers seen as
+// direct operands (addresses 2-5; all compiled code runs in register bank 0),
+// so every imaginary-register instruction works on them unchanged and the
+// AsmPrinter turns the ones that have an Rn form into that shorter form.
+class MCS51ImagAlias<int address, Register R> : MCS51ImagReg<address> {
+  let Aliases = [R];
+}
+def IMR0 : MCS51ImagAlias<2, R2>;
+def IMR1 : MCS51ImagAlias<3, R3>;
+def IMR2 : MCS51ImagAlias<4, R4>;
+def IMR3 : MCS51ImagAlias<5, R5>;
+def IPR0 : MCS51ImagPair<12, IMR0, IMR1>;
+def IPR1 : MCS51ImagPair<13, IMR2, IMR3>;
+
+// Without -mcs51-rn-words the aliases are left out of the allocation order
+// (alternative order 1), so code generation is unchanged.
+def MCS51Imag8 : RegisterClass<"MCS51", [i8], 8,
+                               (add IMR0, IMR1, IMR2, IMR3,
+                                    (sequence "IM%d", 4, 23),
+                                    IM0, IM1, IM2, IM3)> {
+  let AltOrders = [(sequence "IM%d", 0, 23)];
+  let AltOrderSelect = [{ return llvm::mcs51RnWords() ? 0 : 1; }];
+}
 
 // DPL and DPH are members so that the halves of DPTR count as byte
 // subregisters of a word; they are reserved and never allocated to bytes.
@@ -113,4 +136,8 @@ def MCS51Indirect8 : RegisterClass<"MCS51", [i8], 8, (add R0, R1)>;
 def MCS51AReg : RegisterClass<"MCS51", [i8], 8, (add A)>;
 def MCS51PTR : RegisterClass<"MCS51", [i16], 8, (add DPTR)>;
 def MCS51GPR16 : RegisterClass<"MCS51", [i16], 8,
-                               (sequence "IP%d", 0, 11)>;
+                               (add IPR0, IPR1, (sequence "IP%d", 2, 11),
+                                    IP0, IP1)> {
+  let AltOrders = [(sequence "IP%d", 0, 11)];
+  let AltOrderSelect = [{ return llvm::mcs51RnWords() ? 0 : 1; }];
+}

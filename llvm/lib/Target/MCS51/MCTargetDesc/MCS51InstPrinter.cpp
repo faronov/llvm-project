@@ -49,15 +49,19 @@ void MCS51InstPrinter::printInst(const MCInst *MI, uint64_t Address,
   StringRef AddressByteModifier;
   switch (MI->getOpcode()) {
   case MCS51::MOV_IM_SYMLO_XDATA:
+  case MCS51::MOV_RN_SYMLO_XDATA:
     AddressByteModifier = "xlo8";
     break;
   case MCS51::MOV_IM_SYMHI_XDATA:
+  case MCS51::MOV_RN_SYMHI_XDATA:
     AddressByteModifier = "xhi8";
     break;
   case MCS51::MOV_IM_SYMLO_CODE:
+  case MCS51::MOV_RN_SYMLO_CODE:
     AddressByteModifier = "clo8";
     break;
   case MCS51::MOV_IM_SYMHI_CODE:
+  case MCS51::MOV_RN_SYMHI_CODE:
     AddressByteModifier = "chi8";
     break;
   default:

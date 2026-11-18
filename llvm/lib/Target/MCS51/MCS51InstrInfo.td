@@ -2909,6 +2909,25 @@ def MOV_IM_SYMLO_CODE : MCS51AddressByteMove<MCS51SymLo8,
                                              "mov $dst, #clo8($sym)">;
 def MOV_IM_SYMHI_CODE : MCS51AddressByteMove<MCS51SymHi8,
                                              "mov $dst, #chi8($sym)">;
+// The same address bytes loaded into R0-R7 (MOV Rn,#data); the AsmPrinter
+// uses them for imaginary registers that alias Rn under -mcs51-rn-words.
+class MCS51RnAddressByteMove<Operand SymTy, string Asm>
+    : MCS51ImagMove<(outs MCS51GPR8:$rn), (ins SymTy:$sym), Asm, 2> {
+  bits<3> rn; bits<8> sym; bits<16> Inst;
+  let Inst{7-3} = 0b01111;
+  let Inst{2-0} = rn;
+  let Inst{15-8} = sym;
+}
+def MOV_RN_SYMLO : MCS51RnAddressByteMove<MCS51SymLo8, "mov $rn, #lo8($sym)">;
+def MOV_RN_SYMHI : MCS51RnAddressByteMove<MCS51SymHi8, "mov $rn, #hi8($sym)">;
+def MOV_RN_SYMLO_XDATA : MCS51RnAddressByteMove<MCS51SymLo8,
+                                                "mov $rn, #xlo8($sym)">;
+def MOV_RN_SYMHI_XDATA : MCS51RnAddressByteMove<MCS51SymHi8,
+                                                "mov $rn, #xhi8($sym)">;
+def MOV_RN_SYMLO_CODE : MCS51RnAddressByteMove<MCS51SymLo8,
+                                               "mov $rn, #clo8($sym)">;
+def MOV_RN_SYMHI_CODE : MCS51RnAddressByteMove<MCS51SymHi8,
+                                               "mov $rn, #chi8($sym)">;
 def MOV_IM_IMM : MCS51ImagMove<(outs MCS51Imag8:$dst), (ins MCS51Imm8:$imm),
                                "mov $dst, #$imm", 3> {
   bits<8> dst; bits<8> imm; bits<24> Inst;

@@ -1544,9 +1544,16 @@ SDValue MCS51TargetLowering::LowerCall(
     Outs[1].OrigTy = Type::getInt16Ty(*DAG.getContext());
   }
 
+  // The variable 32-bit shift helpers are assembly that keeps its operands in
+  // IP0-IP2 under every ABI option.
+  bool IMWords = false;
+  if (auto *ES = dyn_cast<ExternalSymbolSDNode>(CLI.Callee))
+    IMWords = is_contained({"__ashlsi3", "__lshrsi3", "__ashrsi3"},
+                           StringRef(ES->getSymbol()));
+
   SmallVector<CCValAssign, 8> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
-  CCInfo.AnalyzeCallOperands(Outs, CC_MCS51);
+  CCInfo.AnalyzeCallOperands(Outs, IMWords ? CC_MCS51_IMWords : CC_MCS51);
 
   SDValue Chain = CLI.Chain;
   SDValue InGlue;
@@ -1680,7 +1687,8 @@ SDValue MCS51TargetLowering::LowerCall(
 
   SmallVector<CCValAssign, 2> RetLocs;
   CCState RetInfo(CallConv, IsVarArg, MF, RetLocs, *DAG.getContext());
-  RetInfo.AnalyzeCallResult(CLI.Ins, RetCC_MCS51);
+  RetInfo.AnalyzeCallResult(CLI.Ins,
+                            IMWords ? RetCC_MCS51_IMWords : RetCC_MCS51);
   for (const CCValAssign &VA : RetLocs) {
     SDValue Copy = DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getValVT(),
                                       InGlue);
@@ -1720,10 +1728,8 @@ SDValue MCS51TargetLowering::LowerReturn(
   }
   if (Outs.size() > 1) {
     // A value of several words: low word first, in IP0 upwards.
-    static constexpr MCRegister WordRegs[] = {MCS51::IP0, MCS51::IP1,
-                                              MCS51::IP2, MCS51::IP3};
     for (unsigned I = 0; I != Outs.size(); ++I)
-      Chain = DAG.getCopyToReg(Chain, DL, WordRegs[I], OutVals[I]);
+      Chain = DAG.getCopyToReg(Chain, DL, mcs51WordReg(I), OutVals[I]);
     return DAG.getNode(MCS51ISD::RET_WORD, DL, MVT::Other, Chain,
                        DAG.getTargetConstant(Outs.size(), DL, MVT::i8));
   } else if (!OutVals.empty() &&
@@ -1777,7 +1783,7 @@ SDValue MCS51TargetLowering::LowerReturn(
     }
     if (RetVal.getValueType() == MVT::i8)
       RetVal = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i16, RetVal);
-    Chain = DAG.getCopyToReg(Chain, DL, MCS51::IP0, RetVal);
+    Chain = DAG.getCopyToReg(Chain, DL, mcs51WordReg(0), RetVal);
   }
   if (!Outs.empty() && Outs.front().VT == MVT::i16)
     return DAG.getNode(MCS51ISD::RET_WORD, DL, MVT::Other, Chain,
@@ -2436,10 +2442,10 @@ MachineBasicBlock *MCS51TargetLowering::emitCustomInserter(
     }
     Register Word = MRI.createVirtualRegister(&MCS51::MCS51GPR16RegClass);
     buildWord(*MBB, MII, DL, TII, Word, Lo, Hi);
-    BuildMI(*MBB, MII, DL, TII.get(TargetOpcode::COPY), MCS51::IP0)
+    BuildMI(*MBB, MII, DL, TII.get(TargetOpcode::COPY), mcs51WordReg(0))
         .addReg(Word);
     BuildMI(*MBB, MII, DL, TII.get(MCS51::RET_NOA))
-        .addReg(MCS51::IP0, RegState::Implicit);
+        .addReg(mcs51WordReg(0), RegState::Implicit);
     MI.eraseFromParent();
     return MBB;
   }
@@ -3506,10 +3512,8 @@ MachineBasicBlock *MCS51TargetLowering::emitCustomInserter(
   }
   if (MI.getOpcode() == MCS51::RET16) {
     MachineInstrBuilder Ret = BuildMI(*MBB, MII, DL, TII.get(MCS51::RET_NOA));
-    static constexpr MCRegister WordRegs[] = {MCS51::IP0, MCS51::IP1,
-                                              MCS51::IP2, MCS51::IP3};
     for (int64_t I = 0; I != MI.getOperand(0).getImm(); ++I)
-      Ret.addReg(WordRegs[I], RegState::Implicit);
+      Ret.addReg(mcs51WordReg(I), RegState::Implicit);
     MI.eraseFromParent();
     return MBB;
   }

@@ -2,6 +2,8 @@
 #include "MCS51.h"
 #include "MCS51Subtarget.h"
 #include "MCTargetDesc/MCS51MCTargetDesc.h"
+#include "MCS51RnForm.h"
+#include "MCS51RegisterInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -616,7 +618,20 @@ unsigned MCS51InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     return getInlineAsmLength(MI.getOperand(0).getSymbolName(),
                               MF->getTarget().getMCAsmInfo());
   }
-  return get(MI.getOpcode()).getSize();
+  unsigned Size = get(MI.getOpcode()).getSize();
+  if (mcs51RnShrink()) {
+    // The AsmPrinter emits the shorter Rn form (or nothing) instead.
+    MCInst Inst, Rn;
+    Inst.setOpcode(MI.getOpcode());
+    for (const MachineOperand &MO : MI.operands())
+      Inst.addOperand(MO.isReg()   ? MCOperand::createReg(MO.getReg())
+                      : MO.isImm() ? MCOperand::createImm(MO.getImm())
+                                   : MCOperand::createImm(-1));
+    bool Drop;
+    if (mcs51::getRnForm(Inst, Rn, Drop, RI))
+      return Drop ? 0 : get(Rn.getOpcode()).getSize();
+  }
+  return Size;
 }
 
 MachineBasicBlock *

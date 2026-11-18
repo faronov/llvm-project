@@ -48,6 +48,37 @@ bool llvm::mcs51WideArgs() {
   return WideArgs;
 }
 
+// Experimental: carry the first two argument/result words in R2R3 and R4R5
+// (bank 0) instead of DATA 0x30-0x33, and prefer those registers for other
+// values, so most of their uses get the one-byte Rn instruction forms. Changes
+// the C ABI; R2-R5 must be caller-saved.
+static cl::opt<bool> RnWords(
+    "mcs51-rn-words", cl::Hidden, cl::init(false),
+    cl::desc("pass the first two words in R2R3/R4R5 and allocate those "
+             "registers as imaginary registers; requires -mcs51-csr=none"));
+
+bool llvm::mcs51RnWords() {
+  if (RnWords && CSRMode != CSRSet::None)
+    report_fatal_error("-mcs51-rn-words requires -mcs51-csr=none: R2-R5 are "
+                       "callee-saved otherwise");
+  return RnWords;
+}
+
+static cl::opt<bool> RnShrink(
+    "mcs51-rn-shrink", cl::Hidden, cl::init(true),
+    cl::desc("with -mcs51-rn-words, emit Rn forms for R2-R5 operands"));
+
+bool llvm::mcs51RnShrink() { return mcs51RnWords() && RnShrink; }
+
+MCRegister llvm::mcs51WordReg(unsigned I) {
+  static constexpr MCRegister Default[] = {MCS51::IP0, MCS51::IP1, MCS51::IP2,
+                                           MCS51::IP3};
+  static constexpr MCRegister Rn[] = {MCS51::IPR0, MCS51::IPR1, MCS51::IP2,
+                                      MCS51::IP3};
+  assert(I < 4 && "only four words travel in registers");
+  return mcs51RnWords() ? Rn[I] : Default[I];
+}
+
 // Operand state for storing one byte of a spilled register at I. The
 // allocator spills a whole pair when only one of its lanes is live, so the
 // other byte may hold no value. Walking backwards mirrors MachineVerifier's

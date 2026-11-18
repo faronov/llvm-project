@@ -1,5 +1,7 @@
 #include "MCS51.h"
 #include "MCS51Banking.h"
+#include "MCS51RegisterInfo.h"
+#include "MCS51RnForm.h"
 #include "MCTargetDesc/MCS51InstPrinter.h"
 #include "MCTargetDesc/MCS51MCTargetDesc.h"
 #include "TargetInfo/MCS51TargetInfo.h"
@@ -13,6 +15,7 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -20,6 +23,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
@@ -52,6 +56,21 @@ public:
   static char ID;
 
   StringRef getPassName() const override { return "MCS-51 Assembly Printer"; }
+
+  // Every instruction of this printer goes through here, so -mcs51-rn-words
+  // can pick the Rn forms after allocation and all pseudo expansions.
+  void EmitToStreamer(MCStreamer &S, const MCInst &Inst) {
+    if (mcs51RnShrink()) {
+      MCInst Rn;
+      bool Drop;
+      if (mcs51::getRnForm(Inst, Rn, Drop, *OutContext.getRegisterInfo())) {
+        if (!Drop)
+          AsmPrinter::EmitToStreamer(S, Rn);
+        return;
+      }
+    }
+    AsmPrinter::EmitToStreamer(S, Inst);
+  }
 
   void emitJumpTableInfo() override {
     const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();

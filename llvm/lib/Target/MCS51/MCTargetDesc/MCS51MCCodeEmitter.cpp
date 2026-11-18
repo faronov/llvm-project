@@ -77,17 +77,29 @@ class MCS51MCCodeEmitter final : public MCCodeEmitter {
     if (Op.isExpr() && Op.getExpr()->evaluateAsAbsolute(Value))
       return static_cast<uint8_t>(High ? Value >> 8 : Value);
     if (Op.isExpr()) {
-      bool IsCode = MI.getOpcode() == MCS51::MOV_IM_SYMLO_CODE ||
-                    MI.getOpcode() == MCS51::MOV_IM_SYMHI_CODE;
-      bool IsXData = MI.getOpcode() == MCS51::MOV_IM_SYMLO_XDATA ||
-                     MI.getOpcode() == MCS51::MOV_IM_SYMHI_XDATA;
+      unsigned Opcode = MI.getOpcode();
+      bool IsCode = Opcode == MCS51::MOV_IM_SYMLO_CODE ||
+                    Opcode == MCS51::MOV_IM_SYMHI_CODE ||
+                    Opcode == MCS51::MOV_RN_SYMLO_CODE ||
+                    Opcode == MCS51::MOV_RN_SYMHI_CODE;
+      bool IsXData = Opcode == MCS51::MOV_IM_SYMLO_XDATA ||
+                     Opcode == MCS51::MOV_IM_SYMHI_XDATA ||
+                     Opcode == MCS51::MOV_RN_SYMLO_XDATA ||
+                     Opcode == MCS51::MOV_RN_SYMHI_XDATA;
+      // MOV Rn,#data holds the byte at offset 1, MOV direct,#data at 2.
+      bool IsRn = Opcode == MCS51::MOV_RN_SYMLO ||
+                  Opcode == MCS51::MOV_RN_SYMHI ||
+                  Opcode == MCS51::MOV_RN_SYMLO_CODE ||
+                  Opcode == MCS51::MOV_RN_SYMHI_CODE ||
+                  Opcode == MCS51::MOV_RN_SYMLO_XDATA ||
+                  Opcode == MCS51::MOV_RN_SYMHI_XDATA;
       MCFixupKind Kind = High ? MCS51::fixup_hi8 : MCS51::fixup_lo8;
       if (IsCode)
         Kind = High ? MCS51::fixup_hi8_code : MCS51::fixup_lo8_code;
       else if (IsXData)
         Kind = High ? MCS51::fixup_hi8_xdata : MCS51::fixup_lo8_xdata;
       Fixups.push_back(MCFixup::create(
-          2, Op.getExpr(), Kind));
+          IsRn ? 1 : 2, Op.getExpr(), Kind));
       return 0;
     }
     report_fatal_error("unsupported MCS-51 symbol byte operand");
