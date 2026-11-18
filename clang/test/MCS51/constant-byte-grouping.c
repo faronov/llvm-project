@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple mcs51 -target-cpu cc2530 -Oz -S %s -o - | FileCheck %s
+// RUN: %clang_cc1 -triple mcs51 -target-cpu cc2530 -Oz -mllvm -enable-machine-outliner=never -S %s -o - | FileCheck %s
 
 // Constant byte grouping must not dereference the block end when the scan for
 // stores of one constant reaches the end of the block (an assertion failure in
