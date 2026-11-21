@@ -110,14 +110,13 @@ static const Defined *getCommonTargetOfExternalBankThunk(Ctx &ctx,
 // A definition's trampoline lives in ".text.autobankthunks.direct.N" when the
 // compiler proved the callee reads nothing relative to the trampoline frame
 // (no incoming stack arguments). A call already running under the callee's
-// FMAP value then gains nothing from the trampoline, so return the callee's
-// address in that bank. Other trampolines, including ones from older objects,
+// FMAP value, or to a callee in common flash, gains nothing from the
+// trampoline, so return the callee's address and code bank. Other trampolines, including ones from older objects,
 // keep the protocol. Calls to a local trampoline arrive against its section's
 // STT_SECTION symbol; each trampoline owns its section, so offset 0 is it.
-static std::optional<uint64_t>
+static std::optional<std::pair<uint64_t, unsigned>>
 getSameBankTargetOfBankThunk(Ctx &ctx, const Symbol &sym, unsigned callerBank) {
-  if (!callerBank ||
-      !(sym.isSection() || sym.getName().starts_with("__mcs51_bankcall_")))
+  if (!(sym.isSection() || sym.getName().starts_with("__mcs51_bankcall_")))
     return std::nullopt;
   auto *thunk = dyn_cast<Defined>(&sym);
   auto *thunkSec =
@@ -132,10 +131,12 @@ getSameBankTargetOfBankThunk(Ctx &ctx, const Symbol &sym, unsigned callerBank) {
     auto *target = dyn_cast<Defined>(r.sym);
     auto *targetSec =
         target ? dyn_cast_or_null<InputSection>(target->section) : nullptr;
-    if (!targetSec || !(targetSec->flags & SHF_EXECINSTR) ||
-        getMCS51CodeBank(targetSec->getOutputSection()) != callerBank)
+    if (!targetSec || !(targetSec->flags & SHF_EXECINSTR))
       return std::nullopt;
-    return target->getVA(ctx, r.addend);
+    unsigned targetBank = getMCS51CodeBank(targetSec->getOutputSection());
+    if (targetBank && targetBank != callerBank)
+      return std::nullopt;
+    return std::make_pair(target->getVA(ctx, r.addend), targetBank);
   }
   return std::nullopt;
 }
@@ -169,7 +170,7 @@ static uint32_t getMCS51RemovedBefore(ArrayRef<Relocation> Relocs,
 // The final destination of a direct LCALL/LJMP (or the ACALL/AJMP it was
 // relaxed to) that names a bank-call trampoline the linker bypasses: the
 // common-flash callee of an external trampoline, or the callee of a ".direct."
-// trampoline reached from its own bank. Returns its address and code bank.
+// trampoline reached from its own bank or placed in common flash. Returns its address and code bank.
 static std::optional<std::pair<uint64_t, unsigned>>
 getMCS51BankThunkBypass(Ctx &ctx, const InputSection &sec,
                         const Relocation &rel) {
@@ -180,11 +181,8 @@ getMCS51BankThunkBypass(Ctx &ctx, const InputSection &sec,
     return std::make_pair(direct->getVA(ctx, rel.addend), 0U);
   if (rel.addend != 0 || !(sec.flags & SHF_EXECINSTR))
     return std::nullopt;
-  unsigned callerBank = getMCS51CodeBank(sec.getOutputSection());
-  if (std::optional<uint64_t> direct =
-          getSameBankTargetOfBankThunk(ctx, *rel.sym, callerBank))
-    return std::make_pair(*direct, callerBank);
-  return std::nullopt;
+  return getSameBankTargetOfBankThunk(
+      ctx, *rel.sym, getMCS51CodeBank(sec.getOutputSection()));
 }
 
 class MCS51 final : public TargetInfo {
