@@ -233,7 +233,20 @@ public:
         return;
       }
       if (SrcVT == MVT::i8 && DstVT == MVT::i16) {
-        SDValue Zero = CurDAG->getTargetConstant(0, DL, MVT::i8);
+        // A one-byte DATA, IDATA or PDATA address widened to a 16-bit
+        // pointer. A default (near) pointer must keep naming the object: C
+        // gives a stack object (IDATA) such a pointer for &local, and callees
+        // dereference it with MOVX. The CC2530 maps its internal RAM into
+        // XDATA at 0x1F00-0x1FFF, so there the pointer is 0x1F00 + address;
+        // with a zero high byte it would name XDATA page 0 (PDATA and the
+        // static frames). An explicit __xdata cast keeps the address value.
+        bool IRAM = SrcAS == MCS51::Data || SrcAS == MCS51::IData;
+        uint64_t HighByte = IRAM && DstAS == MCS51::Default &&
+                                    TM.getTargetCPU().equals_insensitive(
+                                        "cc2530")
+                                ? 0x1F
+                                : 0;
+        SDValue Zero = CurDAG->getTargetConstant(HighByte, DL, MVT::i8);
         SDValue High = SDValue(
             CurDAG->getMachineNode(MCS51::MOV_RN_IMM, DL, MVT::i8, Zero), 0);
         SDValue Ops[] = {N->getOperand(0), High};
