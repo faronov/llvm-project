@@ -296,14 +296,17 @@ bool MCS51FrameLowering::restoreCalleeSavedRegisters(
 static void emitStackAdjustment(MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator I,
                                 const TargetInstrInfo &TII, uint64_t Amount,
-                                bool Deallocate, bool PreserveA = false) {
+                                bool Deallocate, bool PreserveA = false,
+                                Register Scratch = Register()) {
   if (Amount > 255)
     report_fatal_error(
         "MCS-51 stack frame exceeds 255-byte stack address space");
 
   // Keep small frames as straight-line INC/DEC instructions. A fixed SFR
   // update avoids code growth proportional to larger frames.
-  if (Amount <= (Deallocate ? 5 : 3)) {
+  // A live A (a byte return value) without a free scratch register keeps
+  // the A-free form at any size.
+  if (Amount <= (Deallocate ? 5 : 3) || (Deallocate && PreserveA && !Scratch)) {
     for (uint64_t N = 0; N != Amount; ++N)
       BuildMI(MBB, I, DebugLoc(), TII.get(Deallocate ? MCS51::DEC_DIRECT
                                                      : MCS51::INC_DIRECT))
@@ -316,6 +319,12 @@ static void emitStackAdjustment(MachineBasicBlock &MBB,
 
   MachineInstr::MIFlag FrameFlag = Deallocate ? MachineInstr::FrameDestroy
                                               : MachineInstr::FrameSetup;
+  // A may hold the function's return value: park it in a free register
+  // across the SP update.
+  bool Park = Deallocate && PreserveA;
+  if (Park)
+    BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::MOV_RN_A), Scratch)
+        .setMIFlag(FrameFlag);
   BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::MOV_A_SP), MCS51::A)
       .setMIFlag(FrameFlag);
   BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::ADD_A_IMM), MCS51::A)
@@ -323,22 +332,10 @@ static void emitStackAdjustment(MachineBasicBlock &MBB,
                          : static_cast<int64_t>(Amount))
       .setMIFlag(FrameFlag);
   BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::MOV_SP_A)).setMIFlag(FrameFlag);
-  if (Deallocate && PreserveA) {
-    // A may hold the function's return value. After releasing the frame, a
-    // balanced push/pop preserves A without disturbing the caller's stack.
-    // FrameDestroy describes the net adjustment even though the balanced
-    // push/pop leaves SP unchanged.
-    BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::PUSH_DIRECT))
-        .addImm(0xe0)
-        .addReg(MCS51::SP, RegState::ImplicitDefine)
-        .addReg(MCS51::SP, RegState::Implicit)
-        .setMIFlag(MachineInstr::FrameDestroy);
-    BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::POP_DIRECT))
-        .addImm(0xe0)
-        .addReg(MCS51::SP, RegState::ImplicitDefine)
-        .addReg(MCS51::SP, RegState::Implicit)
-        .setMIFlag(MachineInstr::FrameDestroy);
-  }
+  if (Park)
+    BuildMI(MBB, I, DebugLoc(), TII.get(MCS51::MOV_A_RN))
+        .addReg(Scratch)
+        .setMIFlag(FrameFlag);
 }
 
 static SmallVector<unsigned, 40>
@@ -523,17 +520,34 @@ void MCS51FrameLowering::emitEpilogue(MachineFunction &MF,
       I->getOperand(0).setReg(MCS51::R0);
     }
   }
-  bool PreserveA = I != MBB.end() && I->getOpcode() == MCS51::RET_A &&
-                   I->getNumOperands() && I->getOperand(0).isReg() &&
-                   I->getOperand(0).getReg() == MCS51::A;
   // The frame lies above the pushed callee-saved registers, so it is
   // released before they are popped.
   auto Release = I;
   while (Release != MBB.begin() &&
          std::prev(Release)->getFlag(MachineInstr::FrameDestroy))
     --Release;
+  // A is preserved whenever anything after the release reads it (the
+  // return's implicit use of a byte result, whatever the return opcode). A
+  // scratch R register must not be read there either; callee-saved ones are
+  // restored by the pops that follow.
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  auto ReadAfter = [&](Register Reg) {
+    for (auto It = Release; It != MBB.end(); ++It)
+      if (It->readsRegister(Reg, TRI))
+        return true;
+    return false;
+  };
+  bool PreserveA = ReadAfter(MCS51::A);
+  Register Scratch;
+  if (PreserveA)
+    for (Register R : {MCS51::R0, MCS51::R1, MCS51::R2, MCS51::R3, MCS51::R4,
+                       MCS51::R5, MCS51::R6, MCS51::R7})
+      if (!ReadAfter(R)) {
+        Scratch = R;
+        break;
+      }
   emitStackAdjustment(MBB, Release, TII, StackSize, /*Deallocate=*/true,
-                      PreserveA);
+                      PreserveA, Scratch);
   if (MF.getFunction().hasFnAttribute("interrupt")) {
     // The prologue pushed the callee-saved registers before the interrupt
     // save set, so the interrupt registers must be popped before the
