@@ -59,7 +59,7 @@ public:
       Changed = true;
     }
     for (MemMoveInst *Move : DynamicMoves) {
-      lowerDynamicAddressSpaceMove(*Move);
+      lowerDynamicAddressSpaceMove(*Move, IRAMMirror);
       Changed = true;
     }
 
@@ -597,7 +597,7 @@ private:
     Copy.eraseFromParent();
   }
 
-  static void lowerDynamicAddressSpaceMove(MemMoveInst &Move) {
+  static void lowerDynamicAddressSpaceMove(MemMoveInst &Move, bool IRAMMirror) {
     Function &F = *Move.getFunction();
     LLVMContext &C = F.getContext();
     const DataLayout &DL = F.getParent()->getDataLayout();
@@ -661,25 +661,35 @@ private:
             "mcs51.memmove.stack.overlap");
       }
     } else {
-      auto PhysicalAddressSpace = [](unsigned AS) -> unsigned {
-        return AS == MCS51::Default ? MCS51::XData : AS;
+      // Overlap is decided on physical memory, not address-space names:
+      // PDATA is XDATA page 0, and on CC2530 internal RAM is mirrored into
+      // XDATA at 0x1F00. Each pointer becomes (space, 16-bit address), with
+      // space 0 for XDATA-visible memory, 1 for CODE and 2 for internal RAM
+      // that has no XDATA mirror. Generic pointers are classified by tag.
+      auto StaticSpace = [&](unsigned AS, bool IsStack) -> int {
+        if (IsStack)
+          AS = MCS51::IData;
+        switch (AS) {
+        case MCS51::Default:
+        case MCS51::XData:
+        case MCS51::PData:
+          return 0;
+        case MCS51::Data:
+        case MCS51::IData:
+          return IRAMMirror ? 0 : 2;
+        case MCS51::Code:
+          return 1;
+        case MCS51::Generic:
+          return -1;
+        default:
+          return -2;
+        }
       };
-      unsigned DstPhysicalAS =
-          DstIsStack ? MCS51::IData : PhysicalAddressSpace(DstAS);
-      unsigned SrcPhysicalAS =
-          SrcIsStack ? MCS51::IData : PhysicalAddressSpace(SrcAS);
-      bool SameInternalRAM =
-          (DstPhysicalAS == MCS51::Data && SrcPhysicalAS == MCS51::IData) ||
-          (DstPhysicalAS == MCS51::IData && SrcPhysicalAS == MCS51::Data);
-      bool HasGeneric = DstAS == MCS51::Generic || SrcAS == MCS51::Generic;
-      bool Comparable = HasGeneric
-                            ? (DstAS == MCS51::Generic &&
-                               SrcAS == MCS51::Generic) ||
-                                  (DstAS == MCS51::Generic &&
-                                   isGenericTagSupported(SrcAS)) ||
-                                  (SrcAS == MCS51::Generic &&
-                                   isGenericTagSupported(DstAS))
-                            : DstPhysicalAS == SrcPhysicalAS || SameInternalRAM;
+      int DstSpace = StaticSpace(DstAS, DstIsStack);
+      int SrcSpace = StaticSpace(SrcAS, SrcIsStack);
+      bool Comparable = DstSpace != -2 && SrcSpace != -2 &&
+                        (DstSpace == -1 || SrcSpace == -1 ||
+                         DstSpace == SrcSpace);
       if (Comparable) {
         auto AddressAsI16 = [&](Value *Pointer, bool IsStack,
                                 const APInt &Offset) -> Value * {
@@ -700,30 +710,59 @@ private:
           Value *Bits = DirectionBuilder.CreatePtrToInt(Pointer, IntTy);
           return DirectionBuilder.CreateZExtOrTrunc(Bits, I16Ty);
         };
-        Value *DstAddress = AddressAsI16(Dst, DstIsStack, DstOffset);
-        Value *SrcAddress = AddressAsI16(Src, SrcIsStack, SrcOffset);
+        Value *Mirror = DirectionBuilder.getInt16(0x1f00);
+        // Returns the physical address and sets Space (an i8 value).
+        auto Physical = [&](Value *Pointer, unsigned AS, bool IsStack,
+                            const APInt &Offset, int StaticSpaceId,
+                            Value *&Space) -> Value * {
+          Value *Address = AddressAsI16(Pointer, IsStack, Offset);
+          if (AS != MCS51::Generic) {
+            Space = DirectionBuilder.getInt8(StaticSpaceId);
+            if (IRAMMirror && (IsStack || AS == MCS51::Data || AS == MCS51::IData))
+              Address = DirectionBuilder.CreateOr(Address, Mirror);
+            return Address;
+          }
+          Value *Bits = DirectionBuilder.CreatePtrToInt(Pointer, I32Ty);
+          Value *Tag = DirectionBuilder.CreateTrunc(
+              DirectionBuilder.CreateLShr(Bits, DirectionBuilder.getInt32(16)),
+              I8Ty, "mcs51.memmove.tag");
+          Value *IsIRAM = DirectionBuilder.CreateICmpEQ(
+              Tag, DirectionBuilder.getInt8(0x40), "mcs51.memmove.iram");
+          Value *IsCode = DirectionBuilder.CreateICmpEQ(
+              Tag, DirectionBuilder.getInt8(0x80), "mcs51.memmove.code");
+          Space = DirectionBuilder.CreateSelect(
+              IsCode, DirectionBuilder.getInt8(1),
+              IRAMMirror ? DirectionBuilder.getInt8(0)
+                         : DirectionBuilder.CreateSelect(
+                               IsIRAM, DirectionBuilder.getInt8(2),
+                               DirectionBuilder.getInt8(0)),
+              "mcs51.memmove.space");
+          if (IRAMMirror)
+            Address = DirectionBuilder.CreateSelect(
+                IsIRAM, DirectionBuilder.CreateOr(Address, Mirror), Address,
+                "mcs51.memmove.physical");
+          return Address;
+        };
+        Value *DstSpaceValue = nullptr, *SrcSpaceValue = nullptr;
+        Value *DstAddress = Physical(Dst, DstAS, DstIsStack, DstOffset,
+                                     DstSpace, DstSpaceValue);
+        Value *SrcAddress = Physical(Src, SrcAS, SrcIsStack, SrcOffset,
+                                     SrcSpace, SrcSpaceValue);
         Value *DstAfterSrc = DirectionBuilder.CreateICmpUGT(
             DstAddress, SrcAddress, "mcs51.memmove.dst.after.src");
         Value *Distance = DirectionBuilder.CreateSub(
             DstAddress, SrcAddress, "mcs51.memmove.distance");
         Value *InRange = DirectionBuilder.CreateICmpULT(
-            Distance, Move.getLength(), "mcs51.memmove.in.range");
+            Distance,
+            DirectionBuilder.CreateZExtOrTrunc(Move.getLength(), I16Ty),
+            "mcs51.memmove.in.range");
         OverlapAfterSource = DirectionBuilder.CreateAnd(
             DstAfterSrc, InRange, "mcs51.memmove.overlap");
-        if (HasGeneric) {
-          auto GetTag = [&](Value *Pointer, unsigned AS) -> Value * {
-            if (AS != MCS51::Generic)
-              return DirectionBuilder.getInt8(getGenericTag(AS, Pointer));
-            Value *Bits = DirectionBuilder.CreatePtrToInt(Pointer, I32Ty);
-            Value *Tag = DirectionBuilder.CreateLShr(
-                Bits, DirectionBuilder.getInt32(16));
-            return DirectionBuilder.CreateTrunc(Tag, I8Ty);
-          };
-          Value *SameTag = DirectionBuilder.CreateICmpEQ(
-              GetTag(Dst, DstAS), GetTag(Src, SrcAS),
-              "mcs51.memmove.same.tag");
+        if (DstAS == MCS51::Generic || SrcAS == MCS51::Generic) {
+          Value *SameSpace = DirectionBuilder.CreateICmpEQ(
+              DstSpaceValue, SrcSpaceValue, "mcs51.memmove.same.space");
           OverlapAfterSource = DirectionBuilder.CreateAnd(
-              OverlapAfterSource, SameTag, "mcs51.memmove.same.space");
+              OverlapAfterSource, SameSpace, "mcs51.memmove.same.space");
         }
       }
     }
