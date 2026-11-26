@@ -1363,7 +1363,25 @@ private:
     }
   }
 
+  // The generic access helpers move one byte at a time, so only a one-byte
+  // atomic access stays indivisible. It is kept ordered like a volatile one.
+  static bool rejectWideAtomic(Instruction &I, Type *Ty) {
+    if (!I.isAtomic())
+      return false;
+    const DataLayout &DL = I.getModule()->getDataLayout();
+    if (DL.getTypeStoreSize(Ty) <= 1)
+      return false;
+    Function &F = *I.getFunction();
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F,
+        "atomic access wider than one byte through an MCS-51 generic pointer",
+        I.getDebugLoc()));
+    return true;
+  }
+
   static void lowerLoad(LoadInst &LI) {
+    rejectWideAtomic(LI, LI.getType());
+    bool Ordered = LI.isVolatile() || LI.isAtomic();
     if (LI.getType()->isAggregateType()) {
       lowerAggregateLoad(LI);
       return;
@@ -1372,7 +1390,7 @@ private:
       IRBuilder<> B(&LI);
       Value *Result = lowerChunkedIntegerLoad(
           B, *LI.getModule(), LI.getPointerOperand(),
-          cast<IntegerType>(LI.getType()), LI.isVolatile());
+          cast<IntegerType>(LI.getType()), Ordered);
       if (auto *I = dyn_cast<Instruction>(Result))
         I->setDebugLoc(LI.getDebugLoc());
       LI.replaceAllUsesWith(Result);
@@ -1390,7 +1408,7 @@ private:
     if (getSuffix(LI.getType()) == "8")
       CallTy = Type::getInt16Ty(C);
     CallInst *Call = createCall(B, M, Name, CallTy, Args);
-    if (LI.isVolatile())
+    if (Ordered)
       Call->setConvergent();
     else
       Call->setOnlyReadsMemory();
@@ -1403,6 +1421,8 @@ private:
   }
 
   static void lowerStore(StoreInst &SI) {
+    rejectWideAtomic(SI, SI.getValueOperand()->getType());
+    bool Ordered = SI.isVolatile() || SI.isAtomic();
     if (SI.getValueOperand()->getType()->isAggregateType()) {
       lowerAggregateStore(SI);
       return;
@@ -1411,7 +1431,7 @@ private:
       IRBuilder<> B(&SI);
       lowerChunkedIntegerStore(
           B, *SI.getModule(), SI.getPointerOperand(), SI.getValueOperand(),
-          cast<IntegerType>(SI.getValueOperand()->getType()), SI.isVolatile());
+          cast<IntegerType>(SI.getValueOperand()->getType()), Ordered);
       SI.eraseFromParent();
       return;
     }
@@ -1437,7 +1457,7 @@ private:
     }
     std::string Name = (Twine("__mcs51_gptrput") + getSuffix(ValueTy)).str();
     CallInst *Call = createCall(B, M, Name, Type::getVoidTy(C), Args);
-    if (SI.isVolatile())
+    if (Ordered)
       Call->setConvergent();
     Call->setDebugLoc(SI.getDebugLoc());
     SI.eraseFromParent();

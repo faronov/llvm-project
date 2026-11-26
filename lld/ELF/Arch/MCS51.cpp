@@ -659,6 +659,23 @@ void MCS51::relocateAlloc(InputSection &sec, uint8_t *buf) const {
       if (targetInput && (targetInput->flags & SHF_EXECINSTR))
         targetBank = getMCS51CodeBank(targetInput->getOutputSection());
     }
+    // A direct jump or call to a non-function target (a local label or a
+    // section-symbol relocation) gets no bank-call trampoline, so it must stay
+    // within the caller's bank or target common flash. Bank-call trampolines
+    // select the callee's bank themselves.
+    if (rel.sym && !rel.sym->isFunc() && !bypassed && isDirectTransfer &&
+        targetBank && !isBankThunk && !isAutoBankThunk) {
+      unsigned callerBank = getMCS51CodeBank(sec.getOutputSection());
+      if (targetBank != callerBank) {
+        StringRef targetName = rel.sym->getName();
+        Err(ctx) << sec.getLocation(rel.offset)
+                 << "MCS-51 direct jump/call cannot cross from bank "
+                 << callerBank << " to bank " << targetBank << " for '"
+                 << (targetName.empty() ? StringRef("<section symbol>")
+                                        : targetName)
+                 << "'";
+      }
+    }
     if (rel.sym && rel.sym->isFunc() && !bypassed) {
       unsigned callerBank = getMCS51CodeBank(sec.getOutputSection());
       if (rel.type == R_8051_11 && targetBank != callerBank)

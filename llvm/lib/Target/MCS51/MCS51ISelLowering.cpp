@@ -1545,11 +1545,16 @@ SDValue MCS51TargetLowering::LowerCall(
   }
 
   // The variable 32-bit shift helpers are assembly that keeps its operands in
-  // IP0-IP2 under every ABI option.
+  // IP0-IP2 under every ABI option, whether the call is a libcall or an
+  // explicit C call to the declared helper. (An indirect call through a
+  // pointer to a helper cannot be recognized and uses the ordinary ABI.)
   bool IMWords = false;
+  StringRef CalleeName;
   if (auto *ES = dyn_cast<ExternalSymbolSDNode>(CLI.Callee))
-    IMWords = is_contained({"__ashlsi3", "__lshrsi3", "__ashrsi3"},
-                           StringRef(ES->getSymbol()));
+    CalleeName = ES->getSymbol();
+  else if (auto *GA = dyn_cast<GlobalAddressSDNode>(CLI.Callee))
+    CalleeName = GA->getGlobal()->getName();
+  IMWords = is_contained({"__ashlsi3", "__lshrsi3", "__ashrsi3"}, CalleeName);
 
   SmallVector<CCValAssign, 8> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());

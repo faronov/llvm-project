@@ -17,9 +17,24 @@ static SDValue getMCS51AbsoluteAddress(SelectionDAG &DAG, SDValue Addr,
                                        SDLoc DL, bool AllowConstant,
                                        bool &IsGlobal) {
   int64_t Offset = 0;
+  bool IRAMMirror = DAG.getTarget().getTargetCPU().equals_insensitive("cc2530");
   while (Addr) {
-    if (Addr.getOpcode() == ISD::ADDRSPACECAST ||
-        Addr.getOpcode() == ISD::BITCAST) {
+    if (auto *Cast = dyn_cast<AddrSpaceCastSDNode>(Addr)) {
+      // On CC2530 a DATA/IDATA <-> near conversion moves the address by the
+      // XDATA mirror (0x1F00), so the source symbol is not the target address.
+      auto IsIRAM = [](unsigned AS) {
+        return AS == MCS51::Data || AS == MCS51::IData;
+      };
+      if (IRAMMirror &&
+          ((IsIRAM(Cast->getSrcAddressSpace()) &&
+            Cast->getDestAddressSpace() == MCS51::Default) ||
+           (Cast->getSrcAddressSpace() == MCS51::Default &&
+            IsIRAM(Cast->getDestAddressSpace()))))
+        return SDValue();
+      Addr = Addr.getOperand(0);
+      continue;
+    }
+    if (Addr.getOpcode() == ISD::BITCAST) {
       Addr = Addr.getOperand(0);
       continue;
     }

@@ -112,3 +112,25 @@ define ptr addrspace(4) @generic_to_xdata(ptr addrspace(8) %p) {
   %x = addrspacecast ptr addrspace(8) %p to ptr addrspace(4)
   ret ptr addrspace(4) %x
 }
+
+; Dereferencing an IDATA global through a near pointer must use the mirrored
+; address too, not the IDATA symbol as an XDATA address.
+@local = external addrspace(2) global i8
+
+define i8 @idata_load_near() {
+; CC2530-LABEL: idata_load_near:
+; CC2530-NOT:   xdata16(local)
+; CC2530:       #31
+; CC2530:       movx a, @dptr
+  %v = load i8, ptr addrspacecast (ptr addrspace(2) @local to ptr), align 1
+  ret i8 %v
+}
+
+define void @idata_store_near() {
+; CC2530-LABEL: idata_store_near:
+; CC2530-NOT:   xdata16(local)
+; CC2530:       #31
+; CC2530:       movx @dptr, a
+  store i8 5, ptr addrspacecast (ptr addrspace(2) @local to ptr), align 1
+  ret void
+}
