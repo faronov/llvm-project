@@ -423,9 +423,15 @@ getInterruptSaveAddresses(const MachineFunction &MF, bool Reverse) {
               Mark(Imag);
         }
       if (MI.getFlag(MachineInstr::FrameSetup) ||
-          MI.getFlag(MachineInstr::FrameDestroy) || MI.getNumOperands() == 0 ||
-          !MI.getOperand(0).isImm())
+          MI.getFlag(MachineInstr::FrameDestroy))
         continue;
+      // Direct and bit addresses are 8-bit fields; selected immediates may
+      // be sign-extended (ACC 0xe0 as -32).
+      auto Field = [&](unsigned Index) -> int {
+        if (MI.getNumOperands() <= Index || !MI.getOperand(Index).isImm())
+          return -1;
+        return static_cast<uint8_t>(MI.getOperand(Index).getImm());
+      };
       switch (MI.getOpcode()) {
       case MCS51::MOV_DIRECT_A:
       case MCS51::ANL_DIRECT_A:
@@ -440,8 +446,30 @@ getInterruptSaveAddresses(const MachineFunction &MF, bool Reverse) {
       case MCS51::INC_DIRECT:
       case MCS51::DEC_DIRECT:
       case MCS51::POP_DIRECT:
-        MarkDirectWrite(MI.getOperand(0).getImm());
+      case MCS51::DJNZ_DIRECT:
+        if (Field(0) >= 0)
+          MarkDirectWrite(Field(0));
         break;
+      case MCS51::XCH_A_DIRECT:
+        if (Field(1) >= 0)
+          MarkDirectWrite(Field(1));
+        break;
+      case MCS51::CLR_BIT:
+      case MCS51::SETB_BIT:
+      case MCS51::CPL_BIT:
+      case MCS51::MOV_BIT_C:
+      case MCS51::JBC: {
+        // Bit addresses 0x80-0xff name bits of the SFR at (address & 0xf8);
+        // ACC, B and PSW are bit-addressable. Only RS0/RS1 switch banks.
+        int Bit = Field(0);
+        if (Bit < 0x80)
+          break;
+        if ((Bit & 0xf8) == 0xd0 && Bit != 0xd3 && Bit != 0xd4)
+          SavePSW = true;
+        else
+          MarkDirectWrite(Bit & 0xf8);
+        break;
+      }
       default:
         break;
       }
