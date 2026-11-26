@@ -35,10 +35,13 @@ namespace {
 class MCS51GenericPointerLowering final : public FunctionPass {
 public:
   static char ID;
-  MCS51GenericPointerLowering() : FunctionPass(ID) {}
+  explicit MCS51GenericPointerLowering(bool IRAMMirror = false)
+      : FunctionPass(ID), IRAMMirror(IRAMMirror) {}
 
   bool runOnFunction(Function &F) override {
     bool Changed = expandNestedGenericCasts(F);
+    if (IRAMMirror)
+      Changed |= guardMirroredNullCasts(F);
     Changed |= rejectUnsupportedGenericCasts(F);
     SmallVector<MemCpyInst *, 4> DynamicCopies;
     SmallVector<MemMoveInst *, 4> DynamicMoves;
@@ -109,7 +112,7 @@ public:
         Operand.set(lowerAddressSpaceCast(
             B, Cast->getPointerOperand(), Cast->getType(),
             Cast->getSrcAddressSpace(), Cast->getDestAddressSpace(),
-            GenericPointerPhis));
+            GenericPointerPhis, IRAMMirror));
         Changed = true;
       }
     }
@@ -137,7 +140,7 @@ public:
         if (Cast->use_empty())
           Cast->eraseFromParent();
         else
-          lowerAddressSpaceCast(*Cast);
+          lowerAddressSpaceCast(*Cast, IRAMMirror);
         Changed = true;
       } else if (auto *LI = dyn_cast<LoadInst>(I)) {
         lowerLoad(*LI);
@@ -153,6 +156,42 @@ public:
   StringRef getPassName() const override {
     return "MCS-51 generic pointer lowering";
   }
+
+private:
+  // CC2530: internal RAM is mirrored into XDATA at 0x1F00-0x1FFF, so a
+  // DATA/IDATA address becomes the near pointer 0x1F00 + address.
+  bool IRAMMirror;
+
+  // The mirror offset is applied by instruction selection. It must not apply
+  // to the null pointer: a source null stays the all-zero near null, as the
+  // constant conversion already does. Object addresses are never null and
+  // need no check.
+  static bool guardMirroredNullCasts(Function &F) {
+    SmallVector<AddrSpaceCastInst *, 4> Casts;
+    for (Instruction &I : instructions(F))
+      if (auto *Cast = dyn_cast<AddrSpaceCastInst>(&I))
+        if (Cast->getDestAddressSpace() == MCS51::Default &&
+            (Cast->getSrcAddressSpace() == MCS51::Data ||
+             Cast->getSrcAddressSpace() == MCS51::IData) &&
+            !isObjectAddress(Cast->getPointerOperand()))
+          Casts.push_back(Cast);
+    for (AddrSpaceCastInst *Cast : Casts) {
+      IRBuilder<> B(Cast->getNextNode());
+      B.SetCurrentDebugLocation(Cast->getDebugLoc());
+      Value *Address = B.CreatePtrToInt(Cast->getPointerOperand(),
+                                        B.getInt8Ty(), "iram.cast.address");
+      Value *IsNull =
+          B.CreateICmpEQ(Address, B.getInt8(0), "iram.cast.isnull");
+      Value *Guarded = B.CreateSelect(
+          IsNull, ConstantPointerNull::get(cast<PointerType>(Cast->getType())),
+          Cast, "iram.cast");
+      Cast->replaceUsesWithIf(Guarded,
+                              [&](Use &U) { return U.getUser() != Guarded; });
+    }
+    return !Casts.empty();
+  }
+
+public:
 
   // Static initializers cannot hold the tagged 32-bit value as one data
   // relocation, so store each converted address as its own 1- or 2-byte
@@ -849,17 +888,18 @@ private:
   static Value *lowerAddressSpaceCast(
       IRBuilder<> &B, Value *Pointer, Type *DestTy, unsigned SrcAS,
       unsigned DstAS,
-      DenseMap<const PHINode *, PHINode *> &GenericPointerPhis) {
+      DenseMap<const PHINode *, PHINode *> &GenericPointerPhis,
+      bool IRAMMirror) {
     Module &M = *B.GetInsertBlock()->getModule();
     LLVMContext &C = M.getContext();
     if (DstAS == MCS51::Generic) {
       if (auto *Select = dyn_cast<SelectInst>(Pointer)) {
         Value *TruePointer =
             lowerAddressSpaceCast(B, Select->getTrueValue(), DestTy, SrcAS,
-                                  DstAS, GenericPointerPhis);
+                                  DstAS, GenericPointerPhis, IRAMMirror);
         Value *FalsePointer =
             lowerAddressSpaceCast(B, Select->getFalseValue(), DestTy, SrcAS,
-                                  DstAS, GenericPointerPhis);
+                                  DstAS, GenericPointerPhis, IRAMMirror);
         return B.CreateSelect(Select->getCondition(), TruePointer, FalsePointer,
                               "gptr.cast.select");
       }
@@ -878,7 +918,7 @@ private:
           IRBuilder<> IncomingBuilder(IncomingBB->getTerminator());
           Value *IncomingPointer = lowerAddressSpaceCast(
               IncomingBuilder, PointerPhi->getIncomingValue(I), DestTy, SrcAS,
-              DstAS, GenericPointerPhis);
+              DstAS, GenericPointerPhis, IRAMMirror);
           GenericPhi->addIncoming(IncomingPointer, IncomingBB);
         }
         return GenericPhi;
@@ -927,18 +967,32 @@ private:
       Value *Truncated = PointerBits == 16
                              ? Address
                              : B.CreateTrunc(Address, IntTy, "gptr.cast.trunc");
+      if (IRAMMirror && SrcAS == MCS51::Generic && DstAS == MCS51::Default) {
+        // A DATA/IDATA tag names internal RAM: the near pointer is its
+        // XDATA mirror, as for a direct DATA/IDATA-to-near conversion. The
+        // generic null has a zero tag and stays null.
+        Type *I32 = Type::getInt32Ty(C);
+        Value *Bits = B.CreatePtrToInt(Pointer, I32, "gptr.cast.bits");
+        Value *Tag = B.CreateAnd(Bits, B.getInt32(0xff0000), "gptr.cast.tag");
+        Value *IsIRAM =
+            B.CreateICmpEQ(Tag, B.getInt32(0x400000), "gptr.cast.isiram");
+        Value *Mirrored = B.CreateOr(B.CreateAnd(Address, B.getInt16(0xff)),
+                                     B.getInt16(0x1f00), "gptr.cast.mirror");
+        Truncated =
+            B.CreateSelect(IsIRAM, Mirrored, Truncated, "gptr.cast.near");
+      }
       Result = B.CreateIntToPtr(Truncated, DestTy, "gptr.cast");
     }
     Result->setName("gptr.cast");
     return Result;
   }
 
-  static void lowerAddressSpaceCast(AddrSpaceCastInst &Cast) {
+  static void lowerAddressSpaceCast(AddrSpaceCastInst &Cast, bool IRAMMirror) {
     IRBuilder<> B(&Cast);
     DenseMap<const PHINode *, PHINode *> GenericPointerPhis;
     Value *Result = lowerAddressSpaceCast(
         B, Cast.getOperand(0), Cast.getType(), Cast.getSrcAddressSpace(),
-        Cast.getDestAddressSpace(), GenericPointerPhis);
+        Cast.getDestAddressSpace(), GenericPointerPhis, IRAMMirror);
     if (auto *I = dyn_cast<Instruction>(Result))
       I->setDebugLoc(Cast.getDebugLoc());
     Cast.replaceAllUsesWith(Result);
@@ -1355,7 +1409,7 @@ private:
 char MCS51GenericPointerLowering::ID = 0;
 
 namespace llvm {
-FunctionPass *createMCS51GenericPointerLoweringPass() {
-  return new MCS51GenericPointerLowering();
+FunctionPass *createMCS51GenericPointerLoweringPass(bool IRAMMirror) {
+  return new MCS51GenericPointerLowering(IRAMMirror);
 }
 } // namespace llvm

@@ -2840,7 +2840,8 @@ public:
   }
 
   bool addPreISel() override {
-    addPass(createMCS51GenericPointerLoweringPass());
+    addPass(createMCS51GenericPointerLoweringPass(
+        getMCS51TargetMachine().getTargetCPU().equals_insensitive("cc2530")));
     addPass(new MCS51OutlineXDataI32Compare());
     addPass(new MCS51NarrowByteMaskTests());
     addPass(new MCS51FoldConditionalByteAdd());

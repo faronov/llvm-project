@@ -55,3 +55,60 @@ define ptr @pdata_object() {
   %near = addrspacecast ptr addrspace(3) @p to ptr
   ret ptr %near
 }
+
+; A run-time DATA/IDATA address may be null. The null pointer stays the
+; all-zero near null, like the constant conversion; only non-null addresses
+; get the mirror high byte.
+define ptr @idata_dynamic(ptr addrspace(2) %p) {
+; CC2530-LABEL: idata_dynamic:
+; CC2530:       cjne r7, #0,
+; CC2530:       #31
+; GENERIC-LABEL: idata_dynamic:
+; GENERIC-NOT:  #31
+; GENERIC:      ret
+  %near = addrspacecast ptr addrspace(2) %p to ptr
+  ret ptr %near
+}
+
+define ptr @data_dynamic(ptr addrspace(1) %p) {
+; CC2530-LABEL: data_dynamic:
+; CC2530:       cjne r7, #0,
+; CC2530:       #31
+  %near = addrspacecast ptr addrspace(1) %p to ptr
+  ret ptr %near
+}
+
+; A nonnull argument needs no null test.
+define ptr @idata_nonnull(ptr addrspace(2) nonnull %p) {
+; CC2530-LABEL: idata_nonnull:
+; CC2530-NOT:   cjne
+; CC2530:       #31
+; CC2530:       ret
+  %near = addrspacecast ptr addrspace(2) %p to ptr
+  ret ptr %near
+}
+
+; Generic to near: a DATA/IDATA tag (0x40) names internal RAM, so the near
+; pointer is its mirror, as for the direct conversion. Other tags keep the
+; 16-bit address; the generic null has a zero tag and stays null.
+define ptr @generic_to_near(ptr addrspace(8) %p) {
+; CC2530-LABEL: generic_to_near:
+; CC2530:       #31
+; CC2530:       #64
+; CC2530:       ret
+; GENERIC-LABEL: generic_to_near:
+; GENERIC-NOT:  #31
+; GENERIC-NOT:  #64
+; GENERIC:      ret
+  %near = addrspacecast ptr addrspace(8) %p to ptr
+  ret ptr %near
+}
+
+; An explicit XDATA conversion keeps the address value.
+define ptr addrspace(4) @generic_to_xdata(ptr addrspace(8) %p) {
+; CC2530-LABEL: generic_to_xdata:
+; CC2530-NOT:   #31
+; CC2530:       ret
+  %x = addrspacecast ptr addrspace(8) %p to ptr addrspace(4)
+  ret ptr addrspace(4) %x
+}

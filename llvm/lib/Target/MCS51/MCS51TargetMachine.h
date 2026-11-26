@@ -45,7 +45,7 @@ private:
 };
 
 FunctionPass *createMCS51ISelDag(MCS51TargetMachine &TM, CodeGenOptLevel OL);
-FunctionPass *createMCS51GenericPointerLoweringPass();
+FunctionPass *createMCS51GenericPointerLoweringPass(bool IRAMMirror);
 FunctionPass *createMCS51StackAddressLoweringPass();
 ModulePass *createMCS51OverlayPass();
 ModulePass *createMCS51CodeConstantEscapePass();
